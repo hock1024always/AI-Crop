@@ -1,0 +1,54 @@
+# 编译器插件配置
+compilers:
+  # LLVM/Clang 编译器
+  - name: llvm-clang
+    enabled: true
+    languages: [c, cpp]
+    optimization_levels: [-O0, -O1, -O2, -O3, -Os, -Oz]
+    timeout: 30s
+    sandbox:
+      enabled: true
+      memory_limit: 512m
+      cpu_limit: 1
+      network: false
+
+  # GCC 编译器
+  - name: gcc
+    enabled: true
+    languages: [c, cpp]
+    optimization_levels: [-O0, -O1, -O2, -O3, -Os]
+    timeout: 30s
+    sandbox:
+      enabled: true
+      memory_limit: 512m
+      cpu_limit: 1
+      network: false
+
+  # Go 编译器
+  - name: go-compiler
+    enabled: true
+    languages: [go]
+    optimization_levels: []
+    timeout: 60s
+    sandbox:
+      enabled: true
+      memory_limit: 1g
+      cpu_limit: 2
+      network: false
+
+# 默认编译器映射 (语言 → 编译器名称)
+# 当有多个编译器支持同一语言时，使用此配置决定优先级
+defaults:
+  c: gcc
+  cpp: gcc
+  go: go-compiler
+
+# 合作者接入说明:
+#
+# 1. 在 pkg/compiler/ 下创建新目录 (如 pkg/compiler/rust/)
+# 2. 实现 compiler.CompilerPlugin 接口
+# 3. 在此配置文件中添加编译器配置
+# 4. 在初始化代码中注册: compiler.Register(rust.New())
+#
+# 接口定义见: pkg/compiler/interface.go
+# 参考实现: pkg/compiler/gcc/compiler.go

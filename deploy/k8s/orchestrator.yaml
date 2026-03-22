@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: multi-agent-system
+  labels:
+    app: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      serviceAccountName: orchestrator-sa
+      containers:
+        - name: orchestrator
+          image: multi-agent/orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: KUBECONFIG
+              value: "/etc/kubernetes/config"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+            - name: NATS_URL
+              value: "nats://nats:4222"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: kube-config
+              mountPath: /etc/kubernetes
+              readOnly: true
+      volumes:
+        - name: kube-config
+          configMap:
+            name: kube-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  namespace: multi-agent-system
+spec:
+  selector:
+    app: orchestrator
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator-sa
+  namespace: multi-agent-system
+---
+# RBAC 权限 - Orchestrator 需要管理 Pod 和 Namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orchestrator-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "namespaces", "services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: orchestrator-binding
+subjects:
+  - kind: ServiceAccount
+    name: orchestrator-sa
+    namespace: multi-agent-system
+roleRef:
+  kind: ClusterRole
+  name: orchestrator-role
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # NATS 消息队列
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--http_port", "8222", "--jetstream"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Orchestrator 总控服务
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Developer Agent
+  agent-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - AGENT_ID=dev-1
+      - AGENT_NAME=研发工程师-1
+      - AGENT_TYPE=developer
+      - ORCHESTRATOR_URL=ws://orchestrator:8080/ws
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+  # Tester Agent
+  agent-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - AGENT_ID=test-1
+      - AGENT_NAME=测试工程师-1
+      - AGENT_TYPE=tester
+      - ORCHESTRATOR_URL=ws://orchestrator:8080/ws
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+networks:
+  default:
+    name: ai-corp-network

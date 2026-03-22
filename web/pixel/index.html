@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Corp - 像素酒馆</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=ZCOOL+QingKe+HuangYou&family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 主容器 - 酒馆场景 -->
+    <div class="tavern-container">
+        
+        <!-- 顶部状态栏 -->
+        <header class="tavern-header">
+            <div class="logo-section">
+                <div class="pixel-logo">⚔️ AI CORP 酒馆 ⚔️</div>
+                <div class="tagline">~ AI 员工协作空间 ~</div>
+            </div>
+            <div class="status-section">
+                <div class="status-item">
+                    <span class="status-label">在线员工</span>
+                    <span class="status-value" id="online-count">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">进行中任务</span>
+                    <span class="status-value" id="task-count">0</span>
+                </div>
+                <div class="status-item connection-status">
+                    <span class="status-label">连接状态</span>
+                    <span class="status-value" id="connection-status">
+                        <span class="connection-dot offline"></span>
+                        <span id="connection-text">离线</span>
+                    </span>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="tavern-main">
+            
+            <!-- 左侧：员工座位区 -->
+            <section class="tavern-left">
+                <div class="section-title">
+                    <span class="pixel-icon">🍺</span>
+                    员工座位区
+                </div>
+                
+                <!-- 座位网格 -->
+                <div class="seats-grid" id="seats-grid">
+                    <!-- 动态生成座位 -->
+                </div>
+                
+                <!-- 招募按钮 -->
+                <button class="pixel-btn recruit-btn" onclick="openRecruitModal()">
+                    <span class="btn-icon">➕</span>
+                    招募新员工
+                </button>
+            </section>
+
+            <!-- 中间：任务公告板 -->
+            <section class="tavern-center">
+                <div class="section-title">
+                    <span class="pixel-icon">📋</span>
+                    任务公告板
+                </div>
+                
+                <!-- 任务分类标签 -->
+                <div class="task-tabs">
+                    <button class="tab-btn active" data-status="all">全部</button>
+                    <button class="tab-btn" data-status="pending">待分配</button>
+                    <button class="tab-btn" data-status="running">进行中</button>
+                    <button class="tab-btn" data-status="completed">已完成</button>
+                </div>
+                
+                <!-- 任务列表 -->
+                <div class="task-board" id="task-board">
+                    <!-- 动态生成任务卡片 -->
+                </div>
+                
+                <!-- 新建任务 -->
+                <div class="new-task-section">
+                    <textarea class="pixel-textarea" id="task-input" placeholder="描述你的任务..."></textarea>
+                    <button class="pixel-btn primary-btn" onclick="createTask()">
+                        <span class="btn-icon">📝</span>
+                        发布任务
+                    </button>
+                </div>
+            </section>
+
+            <!-- 右侧：员工详情 & 聊天 -->
+            <section class="tavern-right">
+                
+                <!-- 员工详情卡片 -->
+                <div class="employee-detail" id="employee-detail">
+                    <div class="empty-hint">
+                        <span class="hint-icon">👆</span>
+                        点击座位查看员工详情
+                    </div>
+                </div>
+                
+                <!-- 聊天区域 -->
+                <div class="chat-section">
+                    <div class="section-title">
+                        <span class="pixel-icon">💬</span>
+                        酒馆对话
+                    </div>
+                    
+                    <!-- 模型选择 -->
+                    <div class="model-selector">
+                        <label class="model-label">选择模型：</label>
+                        <select class="pixel-select" id="model-select">
+                            <option value="local">🏠 DeepSeek (本地)</option>
+                            <option value="cloud">☁️ DeepSeek (云端)</option>
+                            <option value="openai">☁️ OpenAI (云端)</option>
+                            <option value="auto">🔄 自动选择</option>
+                        </select>
+                    </div>
+                    
+                    <!-- 聊天消息 -->
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="system-msg">
+                            <span class="msg-time">[系统]</span>
+                            欢迎来到 AI Corp 酒馆！有什么可以帮你的吗？
+                        </div>
+                    </div>
+                    
+                    <!-- 输入区 -->
+                    <div class="chat-input-section">
+                        <input type="text" class="pixel-input" id="chat-input" placeholder="输入消息..." />
+                        <button class="pixel-btn send-btn" onclick="sendMessage()">
+                            <span class="btn-icon">📨</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 底部信息栏 -->
+        <footer class="tavern-footer">
+            <div class="footer-left">
+                <span class="version">v1.0.0</span>
+                <span class="copyright">© 2025 AI Corp Team</span>
+            </div>
+            <div class="footer-right">
+                <span class="model-info" id="current-model">当前模型: DeepSeek (本地)</span>
+                <span class="time" id="current-time">00:00:00</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- 招募员工弹窗 -->
+    <div class="modal-overlay hidden" id="recruit-modal">
+        <div class="modal-content pixel-modal">
+            <div class="modal-header">
+                <h2>招募新员工</h2>
+                <button class="close-btn" onclick="closeRecruitModal()">✕</button>
+            </div>
+            
+            <div class="modal-body">
+                <!-- 员工类型选择 -->
+                <div class="form-group">
+                    <label>员工职位：</label>
+                    <div class="role-cards">
+                        <div class="role-card selected" data-role="developer">
+                            <div class="role-icon">👨‍💻</div>
+                            <div class="role-name">开发工程师</div>
+                            <div class="role-desc">代码开发、Bug修复</div>
+                            <div class="role-model">推荐: DeepSeek本地</div>
+                        </div>
+                        <div class="role-card" data-role="tester">
+                            <div class="role-icon">🔬</div>
+                            <div class="role-name">测试工程师</div>
+                            <div class="role-desc">测试用例、质量保证</div>
+                            <div class="role-model">推荐: 云端API</div>
+                        </div>
+                        <div class="role-card" data-role="architect">
+                            <div class="role-icon">🏗️</div>
+                            <div class="role-name">架构师</div>
+                            <div class="role-desc">系统设计、技术规划</div>
+                            <div class="role-model">推荐: 云端API</div>
+                        </div>
+                        <div class="role-card" data-role="devops">
+                            <div class="role-icon">⚙️</div>
+                            <div class="role-name">运维工程师</div>
+                            <div class="role-desc">部署发布、系统监控</div>
+                            <div class="role-model">推荐: DeepSeek本地</div>
+                        </div>
+                        <div class="role-card" data-role="assistant">
+                            <div class="role-icon">🤵</div>
+                            <div class="role-name">生活助理</div>
+                            <div class="role-desc">日程管理、文档处理</div>
+                            <div class="role-model">推荐: DeepSeek本地</div>
+                        </div>
+                        <div class="role-card" data-role="analyst">
+                            <div class="role-icon">📊</div>
+                            <div class="role-name">数据分析师</div>
+                            <div class="role-desc">数据分析、可视化</div>
+                            <div class="role-model">推荐: 云端API</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 员工名称 -->
+                <div class="form-group">
+                    <label>员工名称：</label>
+                    <input type="text" class="pixel-input" id="employee-name" placeholder="给员工起个名字..." />
+                </div>
+                
+                <!-- 模型选择 -->
+                <div class="form-group">
+                    <label>AI 模型：</label>
+                    <div class="model-options">
+                        <label class="model-option">
+                            <input type="radio" name="model-type" value="local" checked />
+                            <span class="model-badge local">
+                                <span class="badge-icon">🏠</span>
+                                <span class="badge-text">DeepSeek 本地</span>
+                                <span class="badge-tag">免费 · 快速 · 隐私</span>
+                            </span>
+                        </label>
+                        <label class="model-option">
+                            <input type="radio" name="model-type" value="cloud" />
+                            <span class="model-badge cloud">
+                                <span class="badge-icon">☁️</span>
+                                <span class="badge-text">云端 API</span>
+                                <span class="badge-tag">强大 · 稳定 · 付费</span>
+                            </span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="modal-footer">
+                <button class="pixel-btn cancel-btn" onclick="closeRecruitModal()">取消</button>
+                <button class="pixel-btn primary-btn" onclick="recruitEmployee()">
+                    <span class="btn-icon">✨</span>
+                    确认招募
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

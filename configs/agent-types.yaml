@@ -1,0 +1,110 @@
+agentTypes:
+  - name: developer
+    displayName: "研发工程师"
+    description: "负责代码开发、调试和代码审查"
+    image: "multi-agent/agent-runtime:latest"
+    resources:
+      requests:
+        cpu: "1"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    skills:
+      - code_generation
+      - code_review
+      - debug
+      - refactor
+    env:
+      - name: AGENT_ROLE
+        value: "developer"
+      - name: MAX_CONCURRENT_TASKS
+        value: "3"
+
+  - name: tester
+    displayName: "测试工程师"
+    description: "负责测试用例生成、自动化测试执行"
+    image: "multi-agent/agent-runtime:latest"
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    skills:
+      - test_case_generation
+      - automated_testing
+      - bug_report
+      - coverage_analysis
+    env:
+      - name: AGENT_ROLE
+        value: "tester"
+      - name: MAX_CONCURRENT_TASKS
+        value: "5"
+
+  - name: architect
+    displayName: "架构师"
+    description: "负责系统设计、技术选型、架构评审"
+    image: "multi-agent/agent-runtime:latest"
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    skills:
+      - system_design
+      - tech_selection
+      - architecture_review
+      - performance_analysis
+    env:
+      - name: AGENT_ROLE
+        value: "architect"
+      - name: MAX_CONCURRENT_TASKS
+        value: "2"
+
+  - name: devops
+    displayName: "运维工程师"
+    description: "负责部署、监控、故障排查"
+    image: "multi-agent/agent-runtime:latest"
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    skills:
+      - deploy
+      - monitor
+      - troubleshoot
+      - ci_cd
+      - log_analysis
+    env:
+      - name: AGENT_ROLE
+        value: "devops"
+      - name: MAX_CONCURRENT_TASKS
+        value: "4"
+
+  - name: product_manager
+    displayName: "产品经理"
+    description: "负责需求分析、产品规划"
+    image: "multi-agent/agent-runtime:latest"
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+    skills:
+      - requirement_analysis
+      - user_story
+      - product_planning
+    env:
+      - name: AGENT_ROLE
+        value: "product_manager"
+      - name: MAX_CONCURRENT_TASKS
+        value: "2"

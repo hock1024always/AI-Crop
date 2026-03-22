@@ -1,0 +1,55 @@
+# AI Corp 配置文件
+
+# LLM 配置 - 双模式：本地 + 云端
+llm:
+  # 主模式：DeepSeek 云端 API
+  provider: deepseek
+  api_key: "${DEEPSEEK_API_KEY}"
+  model: deepseek-chat
+  timeout: 60s
+
+  # 本地模式（DeepSeek 本地部署）
+  local:
+    enabled: true
+    base_url: "http://localhost:11434"
+    model: deepseek-coder:1.3b
+
+# Orchestrator 配置
+orchestrator:
+  port: 8080
+  nats_url: "nats://localhost:4222"
+
+# Agent 默认配置
+agent:
+  heartbeat_interval: 30s
+  max_concurrent_tasks: 3
+
+# 安全配置
+security:
+  enabled: true
+  jwt_secret: "ai-corp-jwt-secret-2024"
+  rate_limit: 100  # 每分钟请求数
+  allowed_origins:
+    - "http://localhost:8080"
+    - "http://172.20.19.106:8080"
+
+# 工作流引擎配置
+workflow:
+  enabled: true
+  max_steps: 20
+  timeout: 300s
+  retry_limit: 3
+
+# AI Infra 配置
+ai_infra:
+  inference:
+    batch_size: 4
+    max_tokens: 4096
+    temperature: 0.7
+    cache_enabled: true
+  training:
+    enabled: false
+    dataset_path: "/home/haoqian.li/ai-corp/data/training"
+  monitoring:
+    enabled: true
+    metrics_port: 9090

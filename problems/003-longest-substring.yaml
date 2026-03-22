@@ -1,0 +1,41 @@
+id: "003"
+title: "无重复字符的最长子串"
+difficulty: medium
+tags: [string, sliding-window, hash-table]
+
+description: |
+  给定一个字符串 s，请你找出其中不含有重复字符的最长子串的长度。
+
+examples:
+  - input: 's = "abcabcbb"'
+    output: "3"
+    explanation: "因为无重复字符的最长子串是 \"abc\"，所以其长度为 3"
+
+  - input: 's = "bbbbb"'
+    output: "1"
+    explanation: "因为无重复字符的最长子串是 \"b\"，所以其长度为 1"
+
+  - input: 's = "pwwkew"'
+    output: "3"
+    explanation: "因为无重复字符的最长子串是 \"wke\"，所以其长度为 3"
+
+constraints:
+  - "0 <= s.length <= 5 * 10^4"
+  - "s 由英文字母、数字、符号和空格组成"
+
+keywords: [字符串, 滑动窗口, 哈希表, 无重复, 最长子串]
+related_problems: ["159", "340", "005"]
+solution_patterns:
+  - pattern: "滑动窗口"
+    hint: "使用双指针维护一个窗口，右指针扩展窗口，遇到重复字符时左指针收缩"
+    complexity: "O(n) 时间, O(min(m,n)) 空间，m 为字符集大小"
+
+  - pattern: "优化的滑动窗口"
+    hint: "使用哈希表记录字符的最新位置，直接跳过重复字符"
+    complexity: "O(n) 时间, O(min(m,n)) 空间"
+
+mcp_tools:
+  - name: "get_hint"
+    args: ["level"]
+  - name: "check_solution"
+    args: ["code", "language"]

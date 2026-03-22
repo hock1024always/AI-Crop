@@ -1,0 +1,55 @@
+# Agent Pod 模板 - 由 Orchestrator 动态创建
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agent-{{AGENT_TYPE}}-{{AGENT_ID}}
+  namespace: agent-{{AGENT_TYPE}}
+  labels:
+    app: agent
+    agent-id: "{{AGENT_ID}}"
+    agent-type: "{{AGENT_TYPE}}"
+spec:
+  containers:
+    - name: agent
+      image: multi-agent/agent-runtime:latest
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: AGENT_ID
+          value: "{{AGENT_ID}}"
+        - name: AGENT_TYPE
+          value: "{{AGENT_TYPE}}"
+        - name: AGENT_NAME
+          value: "{{AGENT_NAME}}"
+        - name: ORCHESTRATOR_URL
+          value: "http://orchestrator.multi-agent-system.svc.cluster.local:8080"
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-keys
+              key: api-key
+      resources:
+        requests:
+          cpu: "{{CPU_REQUEST}}"
+          memory: "{{MEM_REQUEST}}"
+        limits:
+          cpu: "{{CPU_LIMIT}}"
+          memory: "{{MEM_LIMIT}}"
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: workspace
+      emptyDir:
+        sizeLimit: 1Gi
+    - name: tmp
+      emptyDir:
+        sizeLimit: 100Mi
+  restartPolicy: Always
+---
+# Agent Runtime 镜像的 Dockerfile 参考
+# FROM golang:1.21-alpine
+# WORKDIR /app
+# COPY agent-runtime .
+# CMD ["./agent-runtime"]
