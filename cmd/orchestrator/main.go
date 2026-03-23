@@ -16,8 +16,11 @@ import (
 	"github.com/gorilla/websocket"
 	"gopkg.in/yaml.v3"
 
+	"ai-corp/pkg/database"
 	"ai-corp/pkg/llm"
 	"ai-corp/pkg/metrics"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // 简化版 Orchestrator - 用于快速测试
@@ -34,6 +37,14 @@ type Config struct {
 		Port    int    `yaml:"port"`
 		NATSURL string `yaml:"nats_url"`
 	} `yaml:"orchestrator"`
+	Database struct {
+		Host     string `yaml:"host"`
+		Port     int    `yaml:"port"`
+		User     string `yaml:"user"`
+		Password string `yaml:"password"`
+		DBName   string `yaml:"dbname"`
+		SSLMode  string `yaml:"sslmode"`
+	} `yaml:"database"`
 }
 
 // Agent 定义
@@ -73,6 +84,12 @@ type Orchestrator struct {
 	// LLM 客户端
 	llmClient *llm.Client
 	config    *Config
+
+	// Database
+	db *database.DB
+
+	// Inference service (LLM + metrics)
+	inference *llm.InferenceService
 }
 
 type WSMessage struct {
@@ -137,6 +154,45 @@ func NewOrchestrator(configPath string) *Orchestrator {
 		log.Println("Warning: No LLM API key configured, LLM features disabled")
 	}
 
+	// 初始化数据库
+	var db *database.DB
+	dbCfg := database.DefaultConfig()
+	if config.Database.Host != "" {
+		dbCfg.Host = config.Database.Host
+	}
+	if config.Database.Port > 0 {
+		dbCfg.Port = config.Database.Port
+	}
+	if config.Database.User != "" {
+		dbCfg.User = config.Database.User
+	}
+	if config.Database.Password != "" {
+		dbCfg.Password = config.Database.Password
+	}
+	if config.Database.DBName != "" {
+		dbCfg.DBName = config.Database.DBName
+	}
+	if config.Database.SSLMode != "" {
+		dbCfg.SSLMode = config.Database.SSLMode
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err = database.New(ctx, dbCfg)
+	if err != nil {
+		log.Printf("Warning: Database connection failed: %v (running without persistence)", err)
+		db = nil
+	} else {
+		log.Printf("Database connected: %s@%s:%d/%s", dbCfg.User, dbCfg.Host, dbCfg.Port, dbCfg.DBName)
+	}
+
+	// 初始化推理服务
+	var inference *llm.InferenceService
+	if llmClient != nil {
+		inference = llm.NewInferenceService(llmClient, db)
+		log.Println("Inference service initialized with metrics recording")
+	}
+
 	return &Orchestrator{
 		agents:    make(map[string]*Agent),
 		tasks:     make(map[string]*Task),
@@ -145,6 +201,8 @@ func NewOrchestrator(configPath string) *Orchestrator {
 		taskQueue: make(chan *Task, 100),
 		llmClient: llmClient,
 		config:    config,
+		db:        db,
+		inference: inference,
 	}
 }
 
@@ -154,6 +212,10 @@ func (o *Orchestrator) Run() {
 
 	// 启动任务调度
 	go o.taskScheduler()
+
+	// 启动系统指标采集 (CPU/内存/网络)
+	sysCollector := metrics.NewSystemCollector()
+	sysCollector.StartPeriodicCollection(5 * time.Second)
 
 	// 设置路由
 	r := gin.Default()
@@ -191,6 +253,13 @@ func (o *Orchestrator) Run() {
 		// LLM 相关
 		api.GET("/llm/status", o.llmStatus)
 		api.POST("/chat", o.chat)
+
+		// Database-backed endpoints
+		api.GET("/db/health", o.dbHealth)
+		api.GET("/db/agents", o.dbListAgents)
+		api.GET("/db/models", o.dbListModels)
+		api.GET("/db/stats", o.dbInferenceStats)
+		api.GET("/db/audit", o.dbAuditRecent)
 	}
 
 	// WebSocket
@@ -203,8 +272,9 @@ func (o *Orchestrator) Run() {
 
 	// 监控端点
 	mc := metrics.Global()
-	r.GET("/metrics", gin.WrapF(mc.PrometheusHandler()))
-	r.GET("/api/v1/metrics", gin.WrapF(mc.HTTPHandler()))
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))            // Standard Prometheus scrape endpoint
+	r.GET("/api/v1/metrics", gin.WrapF(mc.HTTPHandler()))       // Custom JSON metrics for frontend
+	r.GET("/api/v1/metrics/prom", gin.WrapF(mc.PrometheusHandler())) // Legacy text format
 
 	// 启动定时采集
 	ctx, cancel := context.WithCancel(context.Background())
@@ -512,14 +582,39 @@ func (o *Orchestrator) chat(c *gin.Context) {
 		return
 	}
 
+	// Use InferenceService if available (records metrics to DB)
+	if o.inference != nil {
+		systemPrompt := llm.AgentSystemPrompt(req.AgentType)
+
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+		defer cancel()
+
+		result, err := o.inference.ChatWithSystem(ctx, systemPrompt, req.Message, nil)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"response":          result.Content,
+			"provider":          result.Provider,
+			"model":             result.Model,
+			"prompt_tokens":     result.PromptTokens,
+			"completion_tokens": result.CompletionTokens,
+			"total_tokens":      result.TotalTokens,
+			"latency_ms":        result.LatencyMs,
+			"tps":               result.TPS,
+		})
+		return
+	}
+
+	// Fallback to raw LLM client
 	if o.llmClient == nil {
 		c.JSON(503, gin.H{"error": "LLM client not configured"})
 		return
 	}
 
-	// 使用 Agent 系统提示
 	systemPrompt := llm.AgentSystemPrompt(req.AgentType)
-
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
@@ -732,6 +827,74 @@ func getString(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+// Database-backed handlers
+
+func (o *Orchestrator) dbHealth(c *gin.Context) {
+	if o.db == nil {
+		c.JSON(503, gin.H{"status": "unavailable", "message": "database not connected"})
+		return
+	}
+	health, err := o.db.HealthCheck(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+	c.JSON(200, health)
+}
+
+func (o *Orchestrator) dbListAgents(c *gin.Context) {
+	if o.db == nil {
+		c.JSON(503, gin.H{"error": "database not connected"})
+		return
+	}
+	role := c.Query("role")
+	agents, err := o.db.Agents.List(c.Request.Context(), role)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"agents": agents, "count": len(agents)})
+}
+
+func (o *Orchestrator) dbListModels(c *gin.Context) {
+	if o.db == nil {
+		c.JSON(503, gin.H{"error": "database not connected"})
+		return
+	}
+	models, err := o.db.Models.ListActive(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"models": models, "count": len(models)})
+}
+
+func (o *Orchestrator) dbInferenceStats(c *gin.Context) {
+	if o.db == nil {
+		c.JSON(503, gin.H{"error": "database not connected"})
+		return
+	}
+	stats, err := o.db.Metrics.GetStats(c.Request.Context(), 24)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, stats)
+}
+
+func (o *Orchestrator) dbAuditRecent(c *gin.Context) {
+	if o.db == nil {
+		c.JSON(503, gin.H{"error": "database not connected"})
+		return
+	}
+	entries, err := o.db.Audit.Recent(c.Request.Context(), 50)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"entries": entries, "count": len(entries)})
 }
 
 func main() {

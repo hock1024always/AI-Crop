@@ -19,6 +19,15 @@ orchestrator:
   port: 8080
   nats_url: "nats://localhost:4222"
 
+# 数据库配置 (PostgreSQL 16 + pgvector)
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: ""
+  dbname: aicorp
+  sslmode: disable
+
 # Agent 默认配置
 agent:
   heartbeat_interval: 30s

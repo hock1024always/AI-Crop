@@ -1,0 +1,356 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "Inference QPS",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "rate(aicorp_inference_requests_total[5m])",
+          "legendFormat": "{{model}} - {{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"drawStyle": "line", "fillOpacity": 20}
+        }
+      }
+    },
+    {
+      "title": "Inference Latency (P50/P95/P99)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(aicorp_inference_latency_seconds_bucket[5m]))",
+          "legendFormat": "P50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(aicorp_inference_latency_seconds_bucket[5m]))",
+          "legendFormat": "P95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(aicorp_inference_latency_seconds_bucket[5m]))",
+          "legendFormat": "P99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"drawStyle": "line", "fillOpacity": 10}
+        }
+      }
+    },
+    {
+      "title": "Tokens Per Second",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {
+          "expr": "aicorp_inference_tokens_per_second",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tokps",
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "yellow", "value": 20},
+              {"color": "green", "value": 50}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Token Throughput",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(aicorp_inference_tokens_total[5m])",
+          "legendFormat": "{{model}} - {{direction}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tokps",
+          "custom": {"drawStyle": "bars", "fillOpacity": 60}
+        }
+      }
+    },
+    {
+      "title": "Cache Hit Rate",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(aicorp_inference_cache_hits_total[5m]) / (rate(aicorp_inference_cache_hits_total[5m]) + rate(aicorp_inference_cache_misses_total[5m]))",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "yellow", "value": 0.5},
+              {"color": "green", "value": 0.8}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Error Rate",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(aicorp_inference_requests_total{status='error'}[5m]) / rate(aicorp_inference_requests_total[5m])",
+          "legendFormat": "Error Rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 0.01},
+              {"color": "red", "value": 0.05}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Agent Task Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "rate(aicorp_agent_tasks_total[5m])",
+          "legendFormat": "{{agent_role}} - {{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {"drawStyle": "bars", "stacking": {"mode": "normal"}}
+        }
+      }
+    },
+    {
+      "title": "Database Connections",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 16},
+      "targets": [
+        {
+          "expr": "aicorp_db_connections_active",
+          "legendFormat": "Active"
+        },
+        {
+          "expr": "aicorp_db_connections_idle",
+          "legendFormat": "Idle"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "fillOpacity": 30}
+        }
+      }
+    },
+    {
+      "title": "DB Query Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 16},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(aicorp_db_query_latency_seconds_bucket[5m]))",
+          "legendFormat": "P95 {{operation}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s"}
+      }
+    },
+    {
+      "title": "System - Goroutines",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 24},
+      "targets": [
+        {
+          "expr": "aicorp_system_goroutines",
+          "legendFormat": "Goroutines"
+        }
+      ]
+    },
+    {
+      "title": "System - Memory",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 24},
+      "targets": [
+        {
+          "expr": "aicorp_system_memory_used_bytes",
+          "legendFormat": "Used"
+        },
+        {
+          "expr": "aicorp_system_memory_total_bytes",
+          "legendFormat": "Total"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "bytes"}
+      }
+    },
+    {
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 24},
+      "targets": [
+        {
+          "expr": "rate(aicorp_http_requests_total[5m])",
+          "legendFormat": "{{method}} {{path}} {{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"}
+      }
+    },
+    {
+      "title": "CPU Usage %",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 32},
+      "targets": [
+        {
+          "expr": "aicorp_system_cpu_usage_percent",
+          "legendFormat": "CPU"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 60},
+              {"color": "red", "value": 85}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Memory Usage %",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 32},
+      "targets": [
+        {
+          "expr": "aicorp_system_memory_usage_percent",
+          "legendFormat": "Memory"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 70},
+              {"color": "red", "value": 90}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Network I/O",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "targets": [
+        {
+          "expr": "rate(aicorp_system_network_bytes_in_total[1m])",
+          "legendFormat": "In (RX)"
+        },
+        {
+          "expr": "rate(aicorp_system_network_bytes_out_total[1m])",
+          "legendFormat": "Out (TX)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "Bps"}
+      }
+    },
+    {
+      "title": "Token Generation Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "targets": [
+        {
+          "expr": "rate(aicorp_inference_tokens_total{direction=\"completion\"}[5m])",
+          "legendFormat": "{{model}} - Output Tokens/s"
+        },
+        {
+          "expr": "rate(aicorp_inference_tokens_total{direction=\"prompt\"}[5m])",
+          "legendFormat": "{{model}} - Input Tokens/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "tokps"}
+      }
+    },
+    {
+      "title": "Total Tokens Generated",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 40},
+      "targets": [
+        {
+          "expr": "sum(aicorp_inference_tokens_total{direction=\"completion\"})",
+          "legendFormat": "Output"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"}
+      }
+    },
+    {
+      "title": "Avg Tokens/sec",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 40},
+      "targets": [
+        {
+          "expr": "avg(aicorp_inference_tokens_per_second)",
+          "legendFormat": "TPS"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "tokps"}
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["ai-corp", "inference", "monitoring"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "Asia/Shanghai",
+  "title": "AI Corp - Inference & Platform Monitoring",
+  "uid": "aicorp-main",
+  "version": 1
+}

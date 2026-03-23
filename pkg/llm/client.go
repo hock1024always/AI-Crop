@@ -155,6 +155,49 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 	return llmResp.Choices[0].Message.Content, nil
 }
 
+// ChatFull sends a request and returns the full Response including usage stats.
+func (c *Client) ChatFull(ctx context.Context, req Request) (*Response, error) {
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := c.config.BaseURL + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error: %s - %s", resp.Status, string(body))
+	}
+
+	var llmResp Response
+	if err := json.Unmarshal(body, &llmResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(llmResp.Choices) == 0 {
+		return nil, fmt.Errorf("no response from LLM")
+	}
+
+	return &llmResp, nil
+}
+
 // ChatWithSystem 带系统提示的聊天
 func (c *Client) ChatWithSystem(ctx context.Context, systemPrompt string, userMessage string) (string, error) {
 	messages := []Message{

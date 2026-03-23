@@ -1,0 +1,47 @@
+# AI Corp Prometheus Configuration
+# Scrape interval: 15s for real-time monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['localhost:9093']
+
+# Rule files for alerting
+# rule_files:
+#   - "alert_rules.yml"
+
+scrape_configs:
+  # Self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # AI Corp Orchestrator
+  - job_name: 'aicorp-orchestrator'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['localhost:8080']
+        labels:
+          service: 'orchestrator'
+          environment: 'production'
+
+  # PostgreSQL (via postgres_exporter, if deployed)
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['localhost:9187']
+        labels:
+          service: 'postgresql'
+
+  # Node Exporter (system metrics, if deployed)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          service: 'node'
