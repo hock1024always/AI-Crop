@@ -18,6 +18,8 @@
 
 ---
 
+![image-20260325164347052](UI-design.png)
+
 ## 功能特性
 
 ### 🍺 像素酒馆界面
@@ -42,70 +44,39 @@
 | 生活助理 | 🤵 | DeepSeek 本地 | 日程管理、文档处理 |
 | 数据分析师 | 📊 | 云端 API | 数据分析、可视化 |
 
-### 🔧 MCP 工具系统
-**代码开发类**：
-- `code_generation` - 代码生成
-- `code_review` - 代码审查
-- `debug` - 调试诊断
-- `test_generation` - 测试生成
+## 架构与主要实现
 
-**系统操作类**：
-- `shell_execute` - Shell 命令执行
-- `system_monitor` - 系统监控
-- `process_manager` - 进程管理
+**Docker 任务沙箱隔离**
+每个任务运行在独立容器内，`--cap-drop=ALL` + seccomp + `--network none` + 内存/CPU 硬限制，参考 E2B / Daytona 架构。任务失败不影响宿主机和其他任务。
 
-**网络工具类**：
-- `http_client` - HTTP 客户端
-- `network_diagnostic` - 网络诊断
+**AI 自我迭代与经验共享**
+任务完成后自动触发三层学习闭环：经验提取 → LLM 反思分析 → 技能抽象，结果写入向量数据库并广播给所有 Agent。下一次执行相同类型任务前，历史经验自动注入 system prompt，参考 MemGPT/Letta 架构。
 
-**文件操作类**：
-- `advanced_file_ops` - 高级文件操作
-- `backup_utility` - 备份工具
+**全链路可视化监控**
+24+ Prometheus 指标（推理延迟、Token 消耗、TPS、CPU/内存/网络），gopsutil 每 5 秒采集系统资源，Grafana 18 面板实时展示。
 
-**多媒体类**：
-- `image_processor` - 图像处理
-- `audio_processor` - 音频处理
-
----
-
-## 界面风格
-
-### 设计理念
-
-本项目前端界面灵感来源于**《元气骑士》(Soul Knight)** 的酒馆场景，采用：
-
-- **暖色调木质风格**：模拟中世纪酒馆的温馨氛围
-- **像素艺术角色**：每个 AI 员工都有独特的像素形象
-- **动态交互效果**：角色待机呼吸动画、工作状态动画
-- **直观的视觉区分**：本地模型(绿色标识) vs 云端模型(蓝色标识)
-
-### 界面预览
+**PostgreSQL + pgvector RAG 知识库**
+PostgreSQL 16 + pgvector 0.8.0 源码编译部署。`knowledge_base` 表存储 1536 维向量，IVFFlat 索引余弦相似度检索，支持 AI 员工的经验持久化与语义搜索。
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  ⚔️ AI CORP 酒馆 ⚔️        [在线: 3] [任务: 5] [状态: 正常]  │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  🍺 员工座位区          📋 任务公告板          💬 酒馆对话   │
-│  ┌─────────────┐       ┌─────────────┐       ┌───────────┐  │
-│  │ [👨‍💻 开发]   │       │ 待分配 (2)  │       │ 模型选择  │  │
-│  │ [🔬 测试]   │       │ 进行中 (3)  │       │ [本地/云端]│  │
-│  │ [🏗️ 架构]   │       │ 已完成 (5)  │       │           │  │
-│  │ [➕ 招募]   │       │             │       │ 对话消息  │  │
-│  └─────────────┘       └─────────────┘       └───────────┘  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+前端 (像素风 UI)
+      │  WebSocket / REST
+      ▼
+Orchestrator
+  ├── 任务调度 → Agent
+  ├── task_complete → SelfImprovementLoop（异步）
+  └── chat → GetRelevantMemories → InferenceService
+
+Agent Runtime
+  └── Docker Sandbox（seccomp + 无网络 + 资源限制）
+
+PostgreSQL 16 + pgvector
+  ├── agents / tasks / inference_metrics
+  ├── knowledge_base（向量检索）
+  └── agent_memory / agent_experiences / agent_reflections / agent_skills
+
+Prometheus + Grafana（18 面板）
 ```
-
-### 角色动画效果
-
-- **待机状态**：轻微上下浮动的呼吸动画
-- **工作状态**：左右摇摆的工作动画
-- **模型标识**：
-  - 🏢 绿色边框 = DeepSeek 本地模型
-  - ☁️ 蓝色边框 = 云端 API 模型
-
----
 
 ## 快速开始
 

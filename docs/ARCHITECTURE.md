@@ -1,547 +1,353 @@
 # AI Corp 技术架构文档
 
-本文档详细描述 AI Corp 多智能体协作平台的技术架构、核心模块设计和实现细节。
-
----
-
 ## 1. 系统概述
 
-AI Corp 是一个多智能体协作平台，采用"公司"隐喻，将 AI Agent 模拟为不同职能的员工（研发、测试、架构、运维），通过 Orchestrator 总控协调，实现任务的自动分解、分配和协作完成。
+AI Corp 是一个多智能体协作平台。用"公司"隐喻建模 AI 系统：不同职能的 Agent（研发、测试、架构、运维）由 Orchestrator 统一调度，完成任务的自动分解、执行与学习闭环。
 
-### 1.1 设计理念
-
-- **角色分工**：不同类型的 Agent 具有不同的技能和职责
-- **总控协调**：所有 Agent 通信必须经过 Orchestrator，便于监控和管理
-- **沙箱隔离**：每个 Agent 在独立的环境中执行，保证安全性
-- **可视化交互**：像素风 UI，直观展示 Agent 状态和任务进度
-
-### 1.2 核心特性
-
-| 特性 | 描述 |
-|------|------|
-| 多智能体协作 | Developer、Tester、Architect、DevOps 四种角色 |
-| 实时通信 | WebSocket 双向通信，状态实时同步 |
-| MCP 工具系统 | 可扩展的 Skill 工具集 |
-| RAG 知识库 | 向量检索，智能提示 |
-| 编译器插件 | 支持多语言编译，插件化架构 |
-| 监控体系 | Prometheus 指标，实时监控 |
+**核心设计目标**：
+- 每个任务在隔离的 Docker 沙箱中执行，保证安全
+- Agent 执行完任务后自动提取经验、反思并共享给其他 Agent
+- 全链路指标（推理延迟、Token 消耗、CPU/内存）实时可视化
 
 ---
 
 ## 2. 整体架构
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        前端可视化层                              │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │ Agent画布   │  │ 实时日志    │  │ Agent间通信可视化      │  │
-│  │ (像素风UI)  │  │ (WebSocket) │  │ (任务看板/监控面板)    │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ WebSocket / REST API
-                                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Orchestrator 总控层                           │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ Agent 管理       │ 任务调度       │ 消息路由             │    │
-│  │ - 注册/注销      │ - 创建/分配    │ - WebSocket 广播     │    │
-│  │ - 状态监控       │ - 进度跟踪     │ - NATS Pub/Sub       │    │
-│  │ - 心跳检测       │ - 结果收集     │ - 事件分发           │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ REST API        │ WebSocket      │ Metrics              │    │
-│  │ :8080/api/v1/*  │ :8080/ws       │ :8080/metrics        │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ NATS / WebSocket
-                                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Agent 运行时层                              │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐  │
-│  │ Developer Agent  │  │ Tester Agent     │  │ Architect/    │  │
-│  │ - 代码生成       │  │ - 测试生成       │  │ DevOps Agent  │  │
-│  │ - 代码审查       │  │ - 质量检查       │  │ - 系统设计    │  │
-│  │ - 调试修复       │  │ - 覆盖率分析     │  │ - 部署运维    │  │
-│  └──────────────────┘  └──────────────────┘  └───────────────┘  │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ MCP Server (端口 8081+)                                  │    │
-│  │ - Skill 注册与执行                                       │    │
-│  │ - LLM 调用封装                                           │    │
-│  │ - RAG 工具集成                                           │    │
-│  └─────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      基础设施层                                  │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────┐  │
-│  │ NATS       │  │ Vector     │  │ Compiler   │  │ Docker    │  │
-│  │ 消息队列   │  │ Store      │  │ Plugins    │  │ Sandbox   │  │
-│  │            │  │            │  │            │  │           │  │
-│  │ JetStream  │  │ Chroma/    │  │ LLVM/GCC/  │  │ go-judge  │  │
-│  │            │  │ Milvus     │  │ Go         │  │ 隔离执行  │  │
-│  └────────────┘  └────────────┘  └────────────┘  └───────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                       前端 (WebSocket + REST)                     │
+│          像素风 UI · 任务看板 · 实时监控面板 · Agent 状态画布       │
+└───────────────────────────────┬──────────────────────────────────┘
+                                │ WebSocket / REST API
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                         Orchestrator                              │
+│  ┌────────────────┐  ┌─────────────────┐  ┌────────────────────┐ │
+│  │  Agent Manager │  │  Task Scheduler │  │  Self-Improvement  │ │
+│  │  注册/心跳/路由 │  │  创建/分配/重试  │  │  记忆注入 / 反思   │ │
+│  └────────────────┘  └─────────────────┘  └────────────────────┘ │
+│  ┌────────────────┐  ┌─────────────────┐  ┌────────────────────┐ │
+│  │  InferenceService│ │  Metrics Collector│ │  Audit Log        │ │
+│  │  LLM + DB 记录  │  │  Prometheus 指标  │  │  操作审计          │ │
+│  └────────────────┘  └─────────────────┘  └────────────────────┘ │
+└───────────────┬──────────────────────────┬───────────────────────┘
+                │                          │
+     WebSocket / NATS               pgx connection pool
+                │                          │
+                ▼                          ▼
+┌───────────────────────┐    ┌─────────────────────────────────────┐
+│     Agent Runtime     │    │          PostgreSQL 16               │
+│  Developer / Tester   │    │  agents · tasks · knowledge_base     │
+│  Architect / DevOps   │    │  inference_metrics · workflow_runs   │
+│                       │    │  model_registry · audit_log          │
+│  ┌─────────────────┐  │    │  agent_memory · agent_experiences    │
+│  │  Docker Sandbox │  │    │  agent_reflections · agent_skills    │
+│  │  seccomp + 无网络│  │    │  sandbox_executions                 │
+│  │  内存/CPU 限制   │  │    └─────────────────────────────────────┘
+│  └─────────────────┘  │
+└───────────────────────┘
 ```
 
 ---
 
-## 3. 核心模块设计
+## 3. 核心模块
 
-### 3.1 Orchestrator 总控服务
+### 3.1 Orchestrator (`cmd/orchestrator/`)
 
-**职责**：
-- Agent 生命周期管理（注册、心跳、注销）
-- 任务创建、分配、进度跟踪
-- WebSocket 连接管理和消息广播
-- REST API 服务
-- 监控指标暴露
+任务生命周期全流程管理。
 
-**关键数据结构**：
+**关键流程**：
+```
+POST /api/v1/tasks
+  → taskQueue channel
+  → taskScheduler goroutine 寻找空闲 Agent
+  → WS broadcast task_assigned
+  → Agent 执行
+  → WS task_complete / task_fail
+  → 异步触发 SelfImprovementLoop.ProcessTaskResult
+```
 
-```go
-type Orchestrator struct {
-    agents    map[string]*Agent      // 已注册的 Agent
-    tasks     map[string]*Task       // 任务列表
-    wsClients map[*websocket.Conn]bool // WebSocket 客户端
-    broadcast chan WSMessage         // 广播通道
-    taskQueue chan *Task             // 任务队列
-}
-
-type Agent struct {
-    ID        string   `json:"id"`
-    Name      string   `json:"name"`
-    Type      string   `json:"type"`      // developer/tester/architect/devops
-    Status    string   `json:"status"`    // idle/busy/offline
-    Skills    []string `json:"skills"`
-}
-
-type Task struct {
-    ID          string                 `json:"id"`
-    Title       string                 `json:"title"`
-    Status      string                 `json:"status"`    // pending/running/completed/failed
-    AssignedTo  string                 `json:"assigned_to"`
-    Result      map[string]interface{} `json:"result"`
-}
+**chat 接口记忆增强**：
+```
+POST /api/v1/chat { agent_type, message }
+  → GetRelevantMemories(agent_type)   // 查短期+长期+共享记忆
+  → 拼接到 system prompt
+  → InferenceService.ChatWithSystem
+  → 记录 inference_metrics
 ```
 
 **API 端点**：
 
-| 方法 | 路径 | 功能 |
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/agents` | 列出所有 Agent |
-| POST | `/api/v1/agents` | 创建 Agent |
-| GET | `/api/v1/tasks` | 列出所有任务 |
-| POST | `/api/v1/tasks` | 创建任务 |
-| POST | `/api/v1/tasks/:id/assign` | 分配任务 |
-| GET | `/metrics` | Prometheus 指标 |
-| GET | `/ws` | WebSocket 连接 |
+| GET/POST | `/api/v1/agents` | Agent CRUD |
+| GET/POST | `/api/v1/tasks` | 任务 CRUD |
+| POST | `/api/v1/tasks/:id/assign` | 手动分配 |
+| POST | `/api/v1/chat` | LLM 对话（含记忆注入） |
+| GET | `/api/v1/db/stats` | 推理统计（24h） |
+| GET | `/metrics` | Prometheus scrape |
+| GET | `/ws` | WebSocket 长连接 |
 
-### 3.2 Agent Runtime 运行时
+---
 
-**职责**：
-- 连接 Orchestrator 并注册
-- 接收任务并执行
-- 报告进度和结果
-- 暴露 MCP Server
+### 3.2 Docker Task Sandbox (`pkg/sandbox/`)
 
-**关键数据结构**：
+每个任务在独立容器中执行，参考 E2B / Daytona 架构。
+
+**安全措施**：
+
+| 维度 | 实现 |
+|------|------|
+| 内存隔离 | `--memory` + `--memory-swap`（禁用 swap） |
+| CPU 隔离 | `--cpu-quota` + `--cpus` |
+| 进程限制 | `--pids-limit 256` |
+| 能力限制 | `--cap-drop=ALL` |
+| 权限提升 | `--no-new-privileges` |
+| 系统调用 | `--security-opt seccomp=default`（默认开启） |
+| 网络隔离 | `--network none`（默认）/ `--network ai-corp-sandbox-net`（internal bridge，无外网出口） |
+
+**预定义模板**：
 
 ```go
-type Runtime struct {
-    ID       string
-    Name     string
-    Type     string              // developer/tester/architect/devops
-
-    bus      message.MessageBus  // 消息总线
-    registry *skill.Registry     // Skill 注册表
-    state    *State              // 运行状态
-}
-
-type State struct {
-    Status      string // idle/busy
-    CurrentTask string
-    Stats       map[string]interface{}
-}
+CodeExecutionSandbox()  // 1GB, 1 CPU, 无网络, 10min 超时
+WebScraperSandbox()     // 512MB, 0.5 CPU, internal 网络 + 白名单, 5min
+DataProcessingSandbox() // 2GB, 2 CPU, 无网络, 30min 超时
 ```
 
-**任务执行流程**：
-
+**执行流程**：
 ```
-1. 接收任务 (WebSocket/NATS)
-   ↓
-2. 解析任务类型
-   ↓
-3. 选择执行方式
-   ├── skill: 调用 Skill 注册表
-   ├── llm:   调用 LLM API
-   └── composite: 分解为子任务
-   ↓
-4. 报告进度 (定期)
-   ↓
-5. 报告结果 (成功/失败)
+CreateSandbox(taskID, image, config)
+  → 创建 /tmp/ai-corp-sandbox/{sandboxID} 工作目录
+  → docker run -d [resource+security flags] --network none image sleep N
+  → 返回 sandbox.ID
+
+ExecuteInSandbox(sandboxID, command)
+  → docker exec {containerID} command
+  → 超时 → status=timeout，强制 stop
+
+Cleanup()  → docker stop + rm workdir（cleanupOnce 保证幂等）
 ```
 
-### 3.3 MCP 工具系统
+---
 
-**职责**：
-- 定义和注册 Skill
-- 执行 Skill 并返回结果
-- 提供 LLM 调用封装
+### 3.3 Self-Improvement Loop (`pkg/memory/`)
 
-**Skill 接口**：
+参考 MemGPT/Letta Memory Blocks + Reflexion 框架，任务完成后自动触发三层学习闭环。
+
+**流程**：
+```
+task_complete / task_fail
+         │
+         ▼
+  ExperienceExtractor          → 提取 lessons / patterns / suggestions
+         │                       存入 agent_experiences
+         ▼
+  ReflectionEngine             → LLM 分析根本原因、洞察、行动项
+         │                       存入 agent_reflections
+         ▼
+  SkillLearner                 → 识别新技能，存入 agent_skills
+         │
+         ▼
+  KnowledgeSharer              → 将经验/技能广播给其他 Agent
+                                 存为 type=shared 的 agent_memory
+```
+
+**记忆类型**：
+
+| 类型 | 生命周期 | 用途 |
+|------|----------|------|
+| `short_term` | 1 小时，超过限制淘汰低重要性 | 当前上下文 |
+| `long_term` | 永久，由 ConsolidateToLongTerm 触发 | 重要经验固化 |
+| `reflection` | 永久 | 自我分析记录 |
+| `skill` | 永久，use_count + success_rate 动态更新 | 可复用技能 |
+| `shared` | 永久 | 跨 Agent 传递 |
+
+**chat 记忆注入**：
+```
+GetRelevantMemories(agentID, taskType)
+  → short_term (内存) + long_term (DB) + shared (DB)
+  → 拼接到 system prompt header
+  → 下一轮推理自动利用历史经验
+```
+
+---
+
+### 3.4 RAG 知识库 (`pkg/rag/` + `pkg/database/`)
+
+**存储**：PostgreSQL 16 + pgvector 0.8.0（源码编译）
+
+**两层 VectorStore**：
+```
+MemoryVectorStore   → 开发/测试用，余弦相似度暴力搜索
+PgVectorStore       → 生产用，对接 KnowledgeBaseRepo
+                       INSERT → knowledge_base + embedding vector(1536)
+                       SEARCH → pgvector IVFFlat 索引余弦搜索
+                       结果带 _similarity float64
+```
+
+**检索 SQL**：
+```sql
+SELECT id, title, content, 1 - (embedding <=> $1::vector) AS similarity
+FROM knowledge_base
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> $1::vector
+LIMIT $2
+```
+
+---
+
+### 3.5 监控体系 (`pkg/metrics/`)
+
+**指标采集**：
+
+| 来源 | 实现 | 指标示例 |
+|------|------|---------|
+| LLM 推理 | `InferenceService` 封装 | `ai_inference_latency_seconds`, `ai_tokens_generated` |
+| 系统资源 | `gopsutil` 每 5s 采集 | `system_cpu_percent`, `system_memory_percent`, `system_network_bytes` |
+| 任务状态 | Orchestrator 事件驱动 | `tasks_created_total`, `tasks_completed_total` |
+| 知识库 | DB 查询 | `knowledge_entries_total` |
+
+**采集路径**：
+```
+gopsutil → SystemCollector → prometheus.Gauge
+InferenceService.ChatWithSystem
+  → 记录 inference_metrics 表
+  → promauto Counter/Histogram 更新
+Grafana → /metrics → 18 个 Panel 展示
+```
+
+**Grafana Dashboard**：18 面板，覆盖推理请求速率、Token 速率、P95 延迟、CPU/内存趋势、网络 IO、任务完成率。
+
+---
+
+### 3.6 LLM 双模式 (`pkg/llm/`)
 
 ```go
-type Skill struct {
-    Name        string
-    Description string
-    InputSchema map[string]interface{}
-    Handler     SkillHandler
-}
+// 统一接口，运行时切换
+type Client struct { config Config }  // deepseek / openai / claude
 
-type SkillHandler func(ctx context.Context, input map[string]interface{}) (map[string]interface{}, error)
+// 云端 API 模式
+NewClient(Config{Provider: "deepseek", APIKey: "...", Model: "deepseek-chat"})
+
+// 本地 Ollama 模式
+NewClient(Config{Provider: "openai", BaseURL: "http://localhost:11434/v1", Model: "deepseek-coder:6.7b"})
 ```
 
-**内置 Skills**：
+`InferenceService` 在 `Client` 上增加：
+- 调用前后计时，计算 TPS = completion_tokens / latency_s
+- 写入 `inference_metrics` 表
+- 更新 Prometheus 指标
 
-| Skill | 描述 | 输入 |
-|-------|------|------|
-| `code_generation` | 生成代码 | language, requirement |
-| `code_review` | 代码审查 | code, language |
-| `debug` | 调试代码 | code, error |
-| `test_generation` | 生成测试 | code, test_type |
-| `system_design` | 系统设计 | requirements |
-| `deploy` | 部署应用 | artifact, environment |
+---
 
-### 3.4 消息总线
+### 3.7 数据库层 (`pkg/database/`)
 
-**职责**：
-- Agent 间消息传递
-- 支持发布-订阅和请求-响应模式
-- 消息持久化（JetStream）
+**PostgreSQL 16**：CentOS 7 源码编译，pgvector 0.8.0 扩展编译安装。
 
-**消息类型**：
-
+**连接池（pgx v5）**：
 ```go
-type MessageType string
-
-const (
-    MessageTypeTaskAssign   MessageType = "task.assign"
-    MessageTypeTaskProgress MessageType = "task.progress"
-    MessageTypeTaskComplete MessageType = "task.complete"
-    MessageTypeTaskFail     MessageType = "task.fail"
-    MessageTypeHeartbeat    MessageType = "heartbeat"
-    MessageTypeAgentJoin    MessageType = "agent.join"
-)
+MaxConns = 20, MinConns = 2
+MaxConnLifetime = 30min, MaxConnIdleTime = 5min
 ```
 
-**消息格式**：
+**Repository 清单**：
 
-```go
-type Message struct {
-    ID        string                 `json:"id"`
-    Type      MessageType            `json:"type"`
-    From      string                 `json:"from"`
-    To        string                 `json:"to"`
-    TaskID    string                 `json:"task_id"`
-    Content   map[string]interface{} `json:"content"`
-    Timestamp int64                  `json:"timestamp"`
-}
-```
-
-### 3.5 RAG 服务
-
-**职责**：
-- 题目向量化存储
-- 相似题目检索
-- 多级解题提示
-
-**架构**：
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│ 题库 YAML    │ ──→ │ Embedding    │ ──→ │ Vector Store │
-│ (标准格式)   │     │ (DeepSeek)   │     │ (Memory/     │
-│              │     │              │     │  Chroma)     │
-└──────────────┘     └──────────────┘     └──────────────┘
-                                                  │
-                                                  ▼
-                     ┌──────────────────────────────────────┐
-                     │ MCP Tools                            │
-                     │ - search_similar_problems            │
-                     │ - get_hint (level 1-3)               │
-                     │ - explain_pattern                    │
-                     └──────────────────────────────────────┘
-```
-
-**题目格式**：
-
-```yaml
-id: "001"
-title: "两数之和"
-difficulty: easy
-tags: [array, hash-table]
-
-description: |
-  给定一个整数数组...
-
-keywords: [数组, 哈希表, 查找]
-solution_patterns:
-  - pattern: "哈希表一次遍历"
-    hint: "使用哈希表存储..."
-    complexity: "O(n) 时间, O(n) 空间"
-```
-
-### 3.6 编译器插件系统
-
-**职责**：
-- 支持多语言编译
-- 插件化架构，易于扩展
-- 沙箱隔离执行
-
-**接口定义**：
-
-```go
-type CompilerPlugin interface {
-    Name() string
-    Version() string
-    SupportedLanguages() []string
-    OptimizationLevels() []string
-    Compile(ctx context.Context, req *CompileRequest) (*CompileResult, error)
-    Validate() error
-}
-```
-
-**已实现编译器**：
-
-| 编译器 | 支持语言 | 优化级别 |
-|--------|----------|----------|
-| LLVM/Clang | C, C++ | -O0, -O1, -O2, -O3, -Os, -Oz |
-| GCC | C, C++ | -O0, -O1, -O2, -O3, -Os |
-| Go | Go | - |
-
-**接入流程**：
-
-```
-1. 创建 pkg/compiler/<name>/ 目录
-2. 实现 CompilerPlugin 接口
-3. 添加配置到 configs/compilers.yaml
-4. 调用 compiler.Register() 注册
-5. 提交 PR
-```
-
-### 3.7 监控指标
-
-**职责**：
-- 采集系统运行指标
-- 暴露 Prometheus 端点
-- 提供实时监控数据
-
-**指标类型**：
-
-| 类别 | 指标 | 描述 |
-|------|------|------|
-| Token | `llm_tokens_input_total` | 输入 Token 总数 |
-| Token | `llm_tokens_output_total` | 输出 Token 总数 |
-| Token | `llm_cost_usd` | 估算费用 |
-| 执行 | `execution_total` | 执行总次数 |
-| 执行 | `execution_avg_latency_ms` | 平均延迟 |
-| 执行 | `execution_max_memory_mb` | 最大内存 |
-| 容器 | `container_cpu_pct` | CPU 使用率 |
-| 容器 | `container_memory_mb` | 内存使用 |
-| Agent | `agent_tasks_completed` | 完成任务数 |
+| Repo | 表 | 核心方法 |
+|------|----|---------|
+| `AgentRepo` | `agents` | `Create`, `List`, `UpdateStatus` |
+| `TaskRepo` | `tasks` | `Create`, `UpdateStatus`, `GetByAgent` |
+| `KnowledgeBaseRepo` | `knowledge_base` | `Insert`, `SearchSimilar`, `GetByID`, `Delete`, `Count` |
+| `MetricsRepo` | `inference_metrics` | `Record`, `GetStats` |
+| `ModelRegistryRepo` | `model_registry` | `ListActive`, `UpdateHealth` |
+| `AuditRepo` | `audit_log` | `Log`, `Recent` |
 
 ---
 
-## 4. 部署架构
+## 4. 数据库 Schema 总览
 
-### 4.1 单机部署
-
-```yaml
-# docker-compose.yml
-version: '3.8'
-services:
-  nats:
-    image: nats:latest
-    ports:
-      - "4222:4222"
-
-  orchestrator:
-    build: .
-    ports:
-      - "8080:8080"
-    depends_on:
-      - nats
-
-  agent-dev:
-    build: .
-    environment:
-      - AGENT_ID=dev-1
-      - AGENT_TYPE=developer
-    depends_on:
-      - orchestrator
+**Phase 1**（`deploy/postgresql/schema.sql`）：
+```
+agents · tasks · knowledge_base · inference_metrics
+workflow_runs · model_registry · audit_log · system_config
 ```
 
-### 4.2 Kubernetes 部署
+**Phase 2**（`deploy/postgresql/memory_schema.sql`）：
+```
+agent_memory · agent_experiences · agent_reflections
+agent_skills · sandbox_executions
+```
 
-```yaml
-# namespace.yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: ai-corp
+**关键扩展**：
+- `vector` extension：IVFFlat 索引，余弦相似度
+- `pg_trgm` extension：全文模糊搜索
+- 自动 `updated_at` trigger
+- `get_inference_stats(hours)` 聚合函数
+- `get_self_improvement_stats(agent_id)` 自我改进统计
 
 ---
-# orchestrator.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: orchestrator
-  namespace: ai-corp
-spec:
-  replicas: 1
-  template:
-    spec:
-      containers:
-      - name: orchestrator
-        image: ai-corp/orchestrator:latest
-        ports:
-        - containerPort: 8080
+
+## 5. 目录结构
+
 ```
-
-**资源隔离**：
-
-```yaml
-# ResourceQuota
-resources:
-  limits:
-    cpu: "2"
-    memory: "4Gi"
-  requests:
-    cpu: "500m"
-    memory: "1Gi"
+ai-corp/
+├── cmd/
+│   ├── orchestrator/      # 主服务入口
+│   └── agent-runtime/     # Agent 独立运行时
+├── pkg/
+│   ├── database/          # pgx 连接池 + Repository
+│   ├── llm/               # LLM 客户端 + InferenceService
+│   ├── memory/            # 自我迭代系统（记忆/反思/技能/共享）
+│   ├── metrics/           # Prometheus 指标 + gopsutil 采集
+│   ├── rag/               # RAG 服务 + PgVectorStore 适配器
+│   ├── sandbox/           # Docker 任务沙箱
+│   ├── agent/             # Agent Runtime
+│   ├── message/           # 消息总线（内存 / NATS）
+│   ├── skill/             # MCP Skill 系统
+│   ├── compiler/          # 编译器插件（LLVM/GCC/Go）
+│   └── workflow/          # DAG 工作流引擎
+├── deploy/
+│   ├── postgresql/        # Schema SQL
+│   ├── grafana/           # Dashboard JSON（18 面板）
+│   └── sandbox/           # seccomp profile
+├── web/pixel/             # 前端（像素风 HTML/CSS/JS）
+├── docs/                  # 技术文档
+└── configs/               # 配置文件
 ```
 
 ---
 
-## 5. 前端设计
+## 6. 部署
 
-### 5.1 技术栈
-
-- **纯 HTML/CSS/JS**：零依赖，直接浏览器运行
-- **像素风样式**：Press Start 2P 字体，pixel-border 效果
-- **WebSocket**：实时状态同步
-
-### 5.2 页面结构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TOP BAR: Logo | Connection Status | Clock                  │
-├─────────────┬───────────────────────────┬───────────────────┤
-│  OFFICE     │  WORKSPACE                │  SIDEBAR          │
-│  ┌─────┐    │  ┌─────────────────────┐  │  ┌─────────────┐  │
-│  │ 👨‍💻 │    │  │ TASK BOARD          │  │  │ AGENT INFO  │  │
-│  │dev-1│    │  │ [Backlog][Prog][Done│  │  │ ID: dev-1   │  │
-│  └─────┘    │  └─────────────────────┘  │  │ Status: idle│  │
-│  ┌─────┐    │  ┌─────────────────────┐  │  └─────────────┘  │
-│  │ 🧪 │    │  │ TERMINAL            │  │  ┌─────────────┐  │
-│  │test │    │  │ > create task...    │  │  │ MCP TOOLS   │  │
-│  └─────┘    │  │ [Agent response]    │  │  │ code_gen    │  │
-│  [+ ADD]    │  └─────────────────────┘  │  │ debug       │  │
-│             │                           │  └─────────────┘  │
-│             │                           │  ┌─────────────┐  │
-│             │                           │  │ MONITOR     │  │
-│             │                           │  │ CPU ████ 12%│  │
-│             │                           │  │ MEM ███  34%│  │
-│             │                           │  └─────────────┘  │
-└─────────────┴───────────────────────────┴───────────────────┘
-```
-
----
-
-## 6. 安全设计
-
-### 6.1 沙箱隔离
-
-- **Docker 容器**：每个 Agent 在独立容器中运行
-- **资源限制**：CPU、内存、进程数限制
-- **网络隔离**：禁用网络访问（可选）
-- **go-judge**：代码执行沙箱
-
-### 6.2 通信安全
-
-- **CORS 配置**：限制允许的来源
-- **WebSocket 鉴权**：Token 验证（待实现）
-- **TLS 加密**：生产环境启用 HTTPS
-
----
-
-## 7. 性能优化
-
-### 7.1 并发处理
-
-- **Goroutine 池**：限制并发任务数
-- **Channel 缓冲**：消息队列缓冲
-- **连接复用**：HTTP Keep-Alive
-
-### 7.2 资源管理
-
-- **内存池**：减少 GC 压力
-- **连接池**：数据库/NATS 连接复用
-- **缓存**：热点数据缓存
-
----
-
-## 8. 扩展性
-
-### 8.1 水平扩展
-
-- **Orchestrator 无状态**：可多实例部署
-- **NATS 集群**：消息队列高可用
-- **Agent 弹性伸缩**：根据负载动态增减
-
-### 8.2 插件扩展
-
-- **编译器插件**：支持新语言
-- **MCP 工具**：自定义 Skill
-- **LLM 后端**：支持多种模型
-
----
-
-## 9. 监控与运维
-
-### 9.1 健康检查
+### 快速启动
 
 ```bash
-curl http://localhost:8080/health
-# {"status":"ok","timestamp":1234567890}
+# 1. 启动 PostgreSQL（已源码编译安装）
+pg_ctl -D /usr/local/pgsql/data start
+
+# 2. 初始化 Schema
+psql -U postgres -d aicorp -f deploy/postgresql/schema.sql
+psql -U postgres -d aicorp -f deploy/postgresql/memory_schema.sql
+
+# 3. 启动 Orchestrator
+export LLM_API_KEY=your_key
+export LLM_PROVIDER=deepseek
+./orchestrator
 ```
 
-### 9.2 Prometheus 集成
+### Docker Compose
+
+```bash
+docker-compose up -d
+```
+
+### Prometheus + Grafana
 
 ```yaml
 # prometheus.yml
 scrape_configs:
-  - job_name: 'ai-corp'
+  - job_name: ai-corp
     static_configs:
-      - targets: ['localhost:8080']
+      - targets: ['orchestrator:8080']
 ```
 
-### 9.3 日志
-
-- 结构化 JSON 日志
-- 日志级别：DEBUG、INFO、WARN、ERROR
-- 日志轮转和归档
-
----
-
-## 10. 未来规划
-
-详见 [ROADMAP.md](ROADMAP.md)
-
-- **Phase 1**：Agent 沙箱增强（PII 脱敏、预算控制、审计日志）
-- **Phase 2**：DAG 工作流引擎、A2A 协议
-- **Phase 3**：可视化编排、实时更新
+导入 `deploy/grafana/dashboard.json` 至 Grafana，18 个面板即刻可用。

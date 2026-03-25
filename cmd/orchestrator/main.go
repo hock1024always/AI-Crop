@@ -18,6 +18,7 @@ import (
 
 	"ai-corp/pkg/database"
 	"ai-corp/pkg/llm"
+	"ai-corp/pkg/memory"
 	"ai-corp/pkg/metrics"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -90,6 +91,9 @@ type Orchestrator struct {
 
 	// Inference service (LLM + metrics)
 	inference *llm.InferenceService
+
+	// Self-improvement loop
+	selfImprove *memory.SelfImprovementLoop
 }
 
 type WSMessage struct {
@@ -193,16 +197,26 @@ func NewOrchestrator(configPath string) *Orchestrator {
 		log.Println("Inference service initialized with metrics recording")
 	}
 
+	// 初始化自我改进循环
+	var selfImprove *memory.SelfImprovementLoop
+	if db != nil && llmClient != nil {
+		memStore := memory.NewPostgresMemoryStore(db.Pool)
+		llmAdapter := memory.NewLLMClientAdapter(llmClient)
+		selfImprove = memory.NewSelfImprovementLoop(memStore, llmAdapter, []string{})
+		log.Println("Self-improvement loop initialized")
+	}
+
 	return &Orchestrator{
-		agents:    make(map[string]*Agent),
-		tasks:     make(map[string]*Task),
-		wsClients: make(map[*websocket.Conn]bool),
-		broadcast: make(chan WSMessage, 100),
-		taskQueue: make(chan *Task, 100),
-		llmClient: llmClient,
-		config:    config,
-		db:        db,
-		inference: inference,
+		agents:      make(map[string]*Agent),
+		tasks:       make(map[string]*Task),
+		wsClients:   make(map[*websocket.Conn]bool),
+		broadcast:   make(chan WSMessage, 100),
+		taskQueue:   make(chan *Task, 100),
+		llmClient:   llmClient,
+		config:      config,
+		db:          db,
+		inference:   inference,
+		selfImprove: selfImprove,
 	}
 }
 
@@ -586,6 +600,17 @@ func (o *Orchestrator) chat(c *gin.Context) {
 	if o.inference != nil {
 		systemPrompt := llm.AgentSystemPrompt(req.AgentType)
 
+		// 用历史记忆增强 system prompt（自我迭代闭环）
+		if o.selfImprove != nil && req.AgentType != "" {
+			if memories, err := o.selfImprove.GetRelevantMemories(c.Request.Context(), req.AgentType, "chat"); err == nil && len(memories) > 0 {
+				var memCtx string
+				for _, m := range memories {
+					memCtx += fmt.Sprintf("- [%s] %s\n", m.Type, m.Content)
+				}
+				systemPrompt = systemPrompt + "\n\n# 历史经验（来自记忆系统）\n" + memCtx
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 		defer cancel()
 
@@ -708,6 +733,7 @@ func (o *Orchestrator) handleWSMessage(conn *websocket.Conn, msg *WSMessage) {
 		// 任务完成
 		if content, ok := msg.Content.(map[string]interface{}); ok {
 			taskID := getString(content, "task_id")
+			agentID := getString(content, "agent_id")
 			o.mu.Lock()
 			if task, exists := o.tasks[taskID]; exists {
 				task.Status = "completed"
@@ -716,17 +742,47 @@ func (o *Orchestrator) handleWSMessage(conn *websocket.Conn, msg *WSMessage) {
 				}
 			}
 			o.mu.Unlock()
+
+			// 触发自我改进循环
+			if o.selfImprove != nil && agentID != "" {
+				go func() {
+					taskResult := &memory.TaskResult{
+						TaskID:   taskID,
+						TaskType: getString(content, "task_type"),
+						Success:  true,
+					}
+					if err := o.selfImprove.ProcessTaskResult(context.Background(), agentID, taskResult); err != nil {
+						log.Printf("[SelfImprove] task_complete processing error: %v", err)
+					}
+				}()
+			}
 		}
 
 	case "task_fail":
 		// 任务失败
 		if content, ok := msg.Content.(map[string]interface{}); ok {
 			taskID := getString(content, "task_id")
+			agentID := getString(content, "agent_id")
 			o.mu.Lock()
 			if task, exists := o.tasks[taskID]; exists {
 				task.Status = "failed"
 			}
 			o.mu.Unlock()
+
+			// 失败同样触发自我改进，从错误中学习
+			if o.selfImprove != nil && agentID != "" {
+				go func() {
+					taskResult := &memory.TaskResult{
+						TaskID:   taskID,
+						TaskType: getString(content, "task_type"),
+						Success:  false,
+						Error:    getString(content, "reason"),
+					}
+					if err := o.selfImprove.ProcessTaskResult(context.Background(), agentID, taskResult); err != nil {
+						log.Printf("[SelfImprove] task_fail processing error: %v", err)
+					}
+				}()
+			}
 		}
 	}
 }

@@ -37,6 +37,41 @@ func (r *KnowledgeBaseRepo) Insert(ctx context.Context, entry *KnowledgeEntry) (
 	return id, nil
 }
 
+// GetByID retrieves a single knowledge entry by primary key.
+func (r *KnowledgeBaseRepo) GetByID(ctx context.Context, id string) (*KnowledgeEntry, error) {
+	var e KnowledgeEntry
+	var metaJSON []byte
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, title, content, content_type, source, metadata, chunk_index, chunk_total, language, created_at, updated_at
+		 FROM knowledge_base WHERE id = $1`, id,
+	).Scan(&e.ID, &e.Title, &e.Content, &e.ContentType, &e.Source,
+		&metaJSON, &e.ChunkIndex, &e.ChunkTotal, &e.Language, &e.CreatedAt, &e.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get knowledge by id: %w", err)
+	}
+	json.Unmarshal(metaJSON, &e.Metadata)
+	if e.Metadata == nil {
+		e.Metadata = map[string]interface{}{}
+	}
+	return &e, nil
+}
+
+// Delete removes a knowledge entry by primary key.
+func (r *KnowledgeBaseRepo) Delete(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM knowledge_base WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete knowledge: %w", err)
+	}
+	return nil
+}
+
+// Count returns the total number of entries in the knowledge base.
+func (r *KnowledgeBaseRepo) Count(ctx context.Context) (int, error) {
+	var n int
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM knowledge_base`).Scan(&n)
+	return n, err
+}
+
 // SearchSimilar performs vector similarity search using pgvector's cosine distance.
 func (r *KnowledgeBaseRepo) SearchSimilar(ctx context.Context, queryEmbedding []float32, limit int, contentType string) ([]KnowledgeEntry, error) {
 	if limit <= 0 {

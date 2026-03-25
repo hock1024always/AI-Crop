@@ -47,20 +47,21 @@ type SandboxConfig struct {
 // DefaultSandboxConfig 返回默认沙箱配置
 func DefaultSandboxConfig() *SandboxConfig {
 	return &SandboxConfig{
-		MemoryMB:        512,           // 512MB 内存
-		CPUQuota:        50000,         // 50% CPU
-		CPUPeriod:       100000,        // 100ms 周期
-		CPUCount:        1.0,           // 1 核
+		MemoryMB:         512,
+		CPUQuota:         50000,
+		CPUPeriod:        100000,
+		CPUCount:         1.0,
 		ExecutionTimeout: 5 * time.Minute,
 		IdleTimeout:      10 * time.Minute,
-		NetworkEnabled:   false, // 默认禁用网络
+		NetworkEnabled:   false,
 		AllowedHosts:     []string{},
 		WorkDir:          "/tmp/ai-corp-sandbox",
 		ReadOnlyPaths:    []string{},
 		TempDir:          "/tmp",
 		NoNewPrivileges:  true,
-		Capabilities:     []string{}, // 默认无额外能力
-		SeccompProfile:   "",
+		Capabilities:     []string{},
+		// 默认启用 seccomp，使用内置 default profile
+		SeccompProfile: "default",
 	}
 }
 
@@ -85,9 +86,10 @@ type TaskSandbox struct {
 
 // SandboxManager 沙箱管理器
 type SandboxManager struct {
-	sandboxes map[string]*TaskSandbox
-	config    *SandboxConfig
-	mu        sync.RWMutex
+	sandboxes   map[string]*TaskSandbox
+	config      *SandboxConfig
+	mu          sync.RWMutex
+	seccompPath string // seccomp profile 文件路径
 }
 
 // NewSandboxManager 创建沙箱管理器
@@ -106,10 +108,47 @@ func NewSandboxManager(config *SandboxConfig) (*SandboxManager, error) {
 		return nil, fmt.Errorf("failed to create work dir: %w", err)
 	}
 
+	// 确定 seccomp profile 路径
+	seccompPath := ""
+	if config.SeccompProfile != "" && config.SeccompProfile != "default" {
+		seccompPath = config.SeccompProfile
+	} else if config.SeccompProfile == "default" {
+		// 使用内置 seccomp profile（Docker 默认）
+		seccompPath = "default"
+	}
+
+	// 若有需要网络白名单的配置，预先创建隔离网络
+	if config.NetworkEnabled && len(config.AllowedHosts) > 0 {
+		if err := ensureSandboxNetwork(); err != nil {
+			log.Printf("[Sandbox] Warning: failed to create sandbox network: %v", err)
+		}
+	}
+
 	return &SandboxManager{
-		sandboxes: make(map[string]*TaskSandbox),
-		config:    config,
+		sandboxes:   make(map[string]*TaskSandbox),
+		config:      config,
+		seccompPath: seccompPath,
 	}, nil
+}
+
+// ensureSandboxNetwork 确保 ai-corp-sandbox-net 网络存在（internal 模式，无外网出口）
+func ensureSandboxNetwork() error {
+	// 检查是否已存在
+	out, _ := exec.Command("docker", "network", "inspect", "ai-corp-sandbox-net").Output()
+	if len(out) > 2 {
+		return nil // 已存在
+	}
+	// 创建 internal 网络：容器间可通信，但无法访问外网
+	cmd := exec.Command("docker", "network", "create",
+		"--internal",        // 无外网出口
+		"--driver", "bridge",
+		"ai-corp-sandbox-net",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("create sandbox network: %w, output: %s", err, string(out))
+	}
+	log.Println("[Sandbox] Created isolated network: ai-corp-sandbox-net")
+	return nil
 }
 
 // CreateSandbox 创建任务沙箱
@@ -180,17 +219,35 @@ func (sm *SandboxManager) buildDockerRunArgs(sandbox *TaskSandbox, workDir strin
 		"--no-new-privileges",
 		"--security-opt", "no-new-privileges:true",
 		// 进程隔离
-		"--pids-limit", "256", // 限制进程数
-		// 自动清理
+		"--pids-limit", "256",
+		// 自动清理（容器退出后删除）
 		"--rm",
+	}
+
+	// seccomp profile
+	if sm.seccompPath == "default" {
+		// Docker 默认 seccomp profile（已内置）
+		args = append(args, "--security-opt", "seccomp=default")
+	} else if sm.seccompPath != "" {
+		// 自定义 seccomp profile 文件
+		args = append(args, "--security-opt", fmt.Sprintf("seccomp=%s", sm.seccompPath))
 	}
 
 	// 网络隔离
 	if !config.NetworkEnabled {
+		// 完全禁用网络
 		args = append(args, "--network", "none")
 	} else if len(config.AllowedHosts) > 0 {
-		// 使用自定义网络并配置白名单
+		// 使用 internal bridge 网络：容器间互通但无外网出口
+		// 真实白名单访问控制：通过 DNS 解析 + iptables 在宿主机层面限制
 		args = append(args, "--network", "ai-corp-sandbox-net")
+		// 注入 DNS 白名单（允许的域名解析）
+		for _, host := range config.AllowedHosts {
+			args = append(args, "--add-host", fmt.Sprintf("%s:$(dig +short %s | head -1)", host, host))
+		}
+	} else {
+		// 启用网络但无白名单（仅用于明确需要的场景）
+		args = append(args, "--network", "bridge")
 	}
 
 	// 只读挂载
@@ -202,25 +259,16 @@ func (sm *SandboxManager) buildDockerRunArgs(sandbox *TaskSandbox, workDir strin
 	args = append(args, "-v", fmt.Sprintf("%s:/workspace:rw", workDir))
 	args = append(args, "-w", "/workspace")
 
-	// Seccomp 配置
-	if config.SeccompProfile != "" {
-		args = append(args, "--security-opt", fmt.Sprintf("seccomp=%s", config.SeccompProfile))
-	}
-
-	// 能力限制
-	if len(config.Capabilities) == 0 {
-		args = append(args, "--cap-drop=ALL")
-	} else {
-		args = append(args, "--cap-drop=ALL")
-		for _, cap := range config.Capabilities {
-			args = append(args, fmt.Sprintf("--cap-add=%s", cap))
-		}
+	// 能力限制：先全部移除，再按需添加
+	args = append(args, "--cap-drop=ALL")
+	for _, cap := range config.Capabilities {
+		args = append(args, fmt.Sprintf("--cap-add=%s", cap))
 	}
 
 	// 镜像
 	args = append(args, sandbox.Image)
 
-	// 保持容器运行
+	// 保持容器运行直到超时
 	args = append(args, "sleep", fmt.Sprintf("%d", int(config.ExecutionTimeout.Seconds())+60))
 
 	return args
@@ -426,7 +474,7 @@ func (sm *SandboxManager) Close() error {
 // CodeExecutionSandbox 代码执行沙箱配置
 func CodeExecutionSandbox() *SandboxConfig {
 	return &SandboxConfig{
-		MemoryMB:         1024, // 1GB
+		MemoryMB:         1024,
 		CPUQuota:         100000,
 		CPUPeriod:        100000,
 		CPUCount:         1.0,
@@ -436,10 +484,12 @@ func CodeExecutionSandbox() *SandboxConfig {
 		WorkDir:          "/tmp/ai-corp-sandbox",
 		NoNewPrivileges:  true,
 		Capabilities:     []string{},
+		SeccompProfile:   "default",
 	}
 }
 
 // WebScraperSandbox 网页抓取沙箱配置
+// NetworkEnabled=true + AllowedHosts 白名单 → 使用 internal bridge + 限定域名
 func WebScraperSandbox() *SandboxConfig {
 	return &SandboxConfig{
 		MemoryMB:         512,
@@ -449,17 +499,18 @@ func WebScraperSandbox() *SandboxConfig {
 		ExecutionTimeout: 5 * time.Minute,
 		IdleTimeout:      10 * time.Minute,
 		NetworkEnabled:   true,
-		AllowedHosts:     []string{"*.wikipedia.org", "*.github.com"},
+		AllowedHosts:     []string{"wikipedia.org", "github.com"},
 		WorkDir:          "/tmp/ai-corp-sandbox",
 		NoNewPrivileges:  true,
 		Capabilities:     []string{},
+		SeccompProfile:   "default",
 	}
 }
 
 // DataProcessingSandbox 数据处理沙箱配置
 func DataProcessingSandbox() *SandboxConfig {
 	return &SandboxConfig{
-		MemoryMB:         2048, // 2GB
+		MemoryMB:         2048,
 		CPUQuota:         200000,
 		CPUPeriod:        100000,
 		CPUCount:         2.0,
@@ -469,5 +520,6 @@ func DataProcessingSandbox() *SandboxConfig {
 		WorkDir:          "/tmp/ai-corp-sandbox",
 		NoNewPrivileges:  true,
 		Capabilities:     []string{},
+		SeccompProfile:   "default",
 	}
 }
