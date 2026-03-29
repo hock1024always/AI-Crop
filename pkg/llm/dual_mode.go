@@ -1,8 +1,12 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -41,12 +45,42 @@ type DualModeClient struct {
 type OllamaClient struct {
 	baseURL    string
 	model      string
-	httpClient *HTTPClient
+	httpClient *http.Client
 }
 
-// HTTPClient 简化的 HTTP 客户端接口
-type HTTPClient struct {
-	timeout time.Duration
+// ollamaChatRequest Ollama /api/chat 请求体
+type ollamaChatRequest struct {
+	Model    string          `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Stream   bool            `json:"stream"`
+	Options  map[string]any  `json:"options,omitempty"`
+}
+
+type ollamaMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ollamaChatResponse Ollama /api/chat 响应体（非流式）
+type ollamaChatResponse struct {
+	Model   string        `json:"model"`
+	Message ollamaMessage `json:"message"`
+	Done    bool          `json:"done"`
+	// 统计信息
+	PromptEvalCount   int `json:"prompt_eval_count"`
+	EvalCount         int `json:"eval_count"`
+	TotalDuration     int `json:"total_duration"`
+	LoadDuration      int `json:"load_duration"`
+	EvalDuration      int `json:"eval_duration"`
+}
+
+// NewOllamaClient 创建独立的 Ollama 客户端
+func NewOllamaClient(baseURL, model string) *OllamaClient {
+	return &OllamaClient{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		model:      model,
+		httpClient: &http.Client{Timeout: 120 * time.Second},
+	}
 }
 
 // NewDualModeClient 创建双模式客户端
@@ -59,9 +93,9 @@ func NewDualModeClient(config DualModeConfig) (*DualModeClient, error) {
 	// 初始化本地 Ollama 客户端
 	if config.OllamaBaseURL != "" {
 		client.localClient = &OllamaClient{
-			baseURL: config.OllamaBaseURL,
+			baseURL: strings.TrimRight(config.OllamaBaseURL, "/"),
 			model:   config.OllamaModel,
-			httpClient: &HTTPClient{timeout: 120 * time.Second},
+			httpClient: &http.Client{Timeout: 120 * time.Second},
 		}
 
 		// 注册本地模型
@@ -211,9 +245,89 @@ func (d *DualModeClient) UpdateModelStatus(name string, status string) {
 
 // OllamaClient 方法实现
 
-// Chat Ollama 聊天
+// Chat Ollama 聊天（调用 /api/chat 接口）
 func (o *OllamaClient) Chat(ctx context.Context, messages []Message) (string, error) {
-	// 简化实现：返回提示信息
-	// 实际使用时应该调用 Ollama API
-	return "本地模型响应（Ollama）", nil
+	// 转换消息格式
+	ollamaMessages := make([]ollamaMessage, len(messages))
+	for i, m := range messages {
+		ollamaMessages[i] = ollamaMessage{Role: m.Role, Content: m.Content}
+	}
+
+	reqBody := ollamaChatRequest{
+		Model:    o.model,
+		Messages: ollamaMessages,
+		Stream:   false,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("ollama: marshal request: %w", err)
+	}
+
+	url := o.baseURL + "/api/chat"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return "", fmt.Errorf("ollama: create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := o.httpClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("ollama: request failed (is Ollama running at %s?): %w", o.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("ollama: read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ollama: HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var ollamaResp ollamaChatResponse
+	if err := json.Unmarshal(respBody, &ollamaResp); err != nil {
+		return "", fmt.Errorf("ollama: parse response: %w", err)
+	}
+
+	if ollamaResp.Message.Content == "" {
+		return "", fmt.Errorf("ollama: empty response from model %s", o.model)
+	}
+
+	return ollamaResp.Message.Content, nil
+}
+
+// ChatWithSystem 带系统提示的聊天
+func (o *OllamaClient) ChatWithSystem(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	messages := []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userMessage},
+	}
+	return o.Chat(ctx, messages)
+}
+
+// IsAvailable 检查 Ollama 服务是否可用
+func (o *OllamaClient) IsAvailable(ctx context.Context) bool {
+	url := o.baseURL + "/api/tags"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := o.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// GetModel 返回当前模型名
+func (o *OllamaClient) GetModel() string {
+	return o.model
+}
+
+// GetBaseURL 返回 Ollama 地址
+func (o *OllamaClient) GetBaseURL() string {
+	return o.baseURL
 }

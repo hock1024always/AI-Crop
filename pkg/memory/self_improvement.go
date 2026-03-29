@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -269,6 +270,25 @@ type ReflectionEngine struct {
 type LLMClient interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	GenerateWithSystem(ctx context.Context, system, prompt string) (string, error)
+}
+
+// EmbeddingClient 向量嵌入客户端接口
+type EmbeddingClient interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
+}
+
+// EmbeddingClientAdapter 适配外部 EmbeddingClient 到 memory 包接口
+type EmbeddingClientAdapter struct {
+	embedFunc func(ctx context.Context, text string) ([]float32, error)
+}
+
+// NewEmbeddingClientAdapter 创建 EmbeddingClient 适配器
+func NewEmbeddingClientAdapter(embedFunc func(ctx context.Context, text string) ([]float32, error)) *EmbeddingClientAdapter {
+	return &EmbeddingClientAdapter{embedFunc: embedFunc}
+}
+
+func (a *EmbeddingClientAdapter) Embed(ctx context.Context, text string) ([]float32, error) {
+	return a.embedFunc(ctx, text)
 }
 
 // NewReflectionEngine 创建反思引擎
@@ -556,7 +576,8 @@ func (ee *ExperienceExtractor) parseExperienceResponse(response string) *Experie
 
 // KnowledgeSharer 知识共享器
 type KnowledgeSharer struct {
-	store MemoryStore
+	store           MemoryStore
+	embeddingClient EmbeddingClient
 }
 
 // NewKnowledgeSharer 创建知识共享器
@@ -564,15 +585,22 @@ func NewKnowledgeSharer(store MemoryStore) *KnowledgeSharer {
 	return &KnowledgeSharer{store: store}
 }
 
+// SetEmbeddingClient 设置向量嵌入客户端
+func (ks *KnowledgeSharer) SetEmbeddingClient(client EmbeddingClient) {
+	ks.embeddingClient = client
+}
+
 // ShareExperience 共享经验给其他 Agent
 func (ks *KnowledgeSharer) ShareExperience(ctx context.Context, exp *Experience, targetAgentIDs []string) error {
 	for _, agentID := range targetAgentIDs {
+		content := fmt.Sprintf("来源Agent: %s\n任务类型: %s\n教训: %v\n模式: %v", exp.AgentID, exp.TaskType, exp.Lessons, exp.Patterns)
+
 		sharedBlock := &MemoryBlock{
 			ID:         fmt.Sprintf("shared-%d-%s", time.Now().UnixNano(), agentID),
 			AgentID:    agentID,
 			Type:       MemoryTypeShared,
 			Title:      fmt.Sprintf("共享经验: %s", exp.TaskType),
-			Content:    fmt.Sprintf("来源Agent: %s\n任务类型: %s\n教训: %v\n模式: %v", exp.AgentID, exp.TaskType, exp.Lessons, exp.Patterns),
+			Content:    content,
 			Importance: exp.Confidence,
 			Metadata: map[string]interface{}{
 				"source_agent_id": exp.AgentID,
@@ -581,6 +609,15 @@ func (ks *KnowledgeSharer) ShareExperience(ctx context.Context, exp *Experience,
 			},
 			CreatedAt:  time.Now(),
 			LastAccess: time.Now(),
+		}
+
+		// 生成向量嵌入
+		if ks.embeddingClient != nil {
+			if embedding, err := ks.embeddingClient.Embed(ctx, content); err == nil {
+				sharedBlock.Embedding = embedding
+			} else {
+				log.Printf("[KnowledgeShare] Failed to generate embedding for shared experience: %v", err)
+			}
 		}
 
 		if err := ks.store.StoreBlock(ctx, sharedBlock); err != nil {
@@ -596,12 +633,14 @@ func (ks *KnowledgeSharer) ShareExperience(ctx context.Context, exp *Experience,
 // ShareSkill 共享技能给其他 Agent
 func (ks *KnowledgeSharer) ShareSkill(ctx context.Context, skill *SkillDefinition, targetAgentIDs []string) error {
 	for _, agentID := range targetAgentIDs {
+		content := fmt.Sprintf("%s\n\n模板:\n%s", skill.Description, skill.Template)
+
 		sharedBlock := &MemoryBlock{
 			ID:         fmt.Sprintf("skill-shared-%d-%s", time.Now().UnixNano(), agentID),
 			AgentID:    agentID,
 			Type:       MemoryTypeSkill,
 			Title:      fmt.Sprintf("共享技能: %s", skill.Name),
-			Content:    fmt.Sprintf("%s\n\n模板:\n%s", skill.Description, skill.Template),
+			Content:    content,
 			Importance: skill.SuccessRate,
 			Metadata: map[string]interface{}{
 				"skill_id":   skill.ID,
@@ -610,6 +649,15 @@ func (ks *KnowledgeSharer) ShareSkill(ctx context.Context, skill *SkillDefinitio
 			},
 			CreatedAt:  time.Now(),
 			LastAccess: time.Now(),
+		}
+
+		// 生成向量嵌入
+		if ks.embeddingClient != nil {
+			if embedding, err := ks.embeddingClient.Embed(ctx, content); err == nil {
+				sharedBlock.Embedding = embedding
+			} else {
+				log.Printf("[KnowledgeShare] Failed to generate embedding for shared skill: %v", err)
+			}
 		}
 
 		if err := ks.store.StoreBlock(ctx, sharedBlock); err != nil {
@@ -628,12 +676,16 @@ func (ks *KnowledgeSharer) ShareSkill(ctx context.Context, skill *SkillDefinitio
 
 // SelfImprovementLoop 自我改进循环
 type SelfImprovementLoop struct {
-	store          MemoryStore
-	memoryManager  *MemoryManager
-	reflection     *ReflectionEngine
-	extractor      *ExperienceExtractor
-	sharer         *KnowledgeSharer
-	agentIDs       []string // 所有 Agent ID 列表
+	store           MemoryStore
+	memoryManager   *MemoryManager
+	reflection      *ReflectionEngine
+	extractor       *ExperienceExtractor
+	sharer          *KnowledgeSharer
+	agentIDs        []string // 所有 Agent ID 列表
+	agentIDsMu      sync.RWMutex
+	embeddingClient EmbeddingClient // 向量嵌入客户端
+	taskCounters    sync.Map        // agentID -> *int32, 每个 Agent 的任务计数
+	consolidateN    int             // 每处理 N 个任务触发一次固化
 }
 
 // NewSelfImprovementLoop 创建自我改进循环
@@ -641,19 +693,89 @@ func NewSelfImprovementLoop(
 	store MemoryStore,
 	llmClient LLMClient,
 	agentIDs []string,
+	embeddingClient EmbeddingClient,
 ) *SelfImprovementLoop {
-	return &SelfImprovementLoop{
-		store:         store,
-		memoryManager: NewMemoryManager(store, 10),
-		reflection:    NewReflectionEngine(store, llmClient),
-		extractor:     NewExperienceExtractor(store, llmClient),
-		sharer:        NewKnowledgeSharer(store),
-		agentIDs:      agentIDs,
+	sharer := NewKnowledgeSharer(store)
+	if embeddingClient != nil {
+		sharer.SetEmbeddingClient(embeddingClient)
 	}
+
+	return &SelfImprovementLoop{
+		store:           store,
+		memoryManager:   NewMemoryManager(store, 10),
+		reflection:      NewReflectionEngine(store, llmClient),
+		extractor:       NewExperienceExtractor(store, llmClient),
+		sharer:          sharer,
+		agentIDs:        agentIDs,
+		embeddingClient: embeddingClient,
+		consolidateN:    10, // 默认每 10 个任务固化一次
+	}
+}
+
+// SetAgentIDs 设置所有 Agent ID 列表（线程安全）
+func (sil *SelfImprovementLoop) SetAgentIDs(agentIDs []string) {
+	sil.agentIDsMu.Lock()
+	defer sil.agentIDsMu.Unlock()
+	// 复制切片避免外部修改
+	sil.agentIDs = append([]string(nil), agentIDs...)
+	log.Printf("[SelfImprove] Agent IDs updated: %v", sil.agentIDs)
+}
+
+// GetAgentIDs 获取当前 Agent ID 列表（线程安全）
+func (sil *SelfImprovementLoop) GetAgentIDs() []string {
+	sil.agentIDsMu.RLock()
+	defer sil.agentIDsMu.RUnlock()
+	return append([]string(nil), sil.agentIDs...)
+}
+
+// AddAgentID 添加单个 Agent ID（线程安全）
+func (sil *SelfImprovementLoop) AddAgentID(agentID string) {
+	sil.agentIDsMu.Lock()
+	defer sil.agentIDsMu.Unlock()
+	// 检查是否已存在
+	for _, id := range sil.agentIDs {
+		if id == agentID {
+			return
+		}
+	}
+	sil.agentIDs = append(sil.agentIDs, agentID)
+	log.Printf("[SelfImprove] Agent added: %s, current list: %v", agentID, sil.agentIDs)
+}
+
+// RemoveAgentID 移除单个 Agent ID（线程安全）
+func (sil *SelfImprovementLoop) RemoveAgentID(agentID string) {
+	sil.agentIDsMu.Lock()
+	defer sil.agentIDsMu.Unlock()
+	for i, id := range sil.agentIDs {
+		if id == agentID {
+			sil.agentIDs = append(sil.agentIDs[:i], sil.agentIDs[i+1:]...)
+			log.Printf("[SelfImprove] Agent removed: %s, current list: %v", agentID, sil.agentIDs)
+			return
+		}
+	}
+}
+
+// embedContent 为文本生成向量嵌入（带降级处理）
+func (sil *SelfImprovementLoop) embedContent(ctx context.Context, content string) []float32 {
+	if sil.embeddingClient == nil {
+		log.Printf("[SelfImprove] Embedding client not configured, skipping vector generation")
+		return nil
+	}
+
+	embedding, err := sil.embeddingClient.Embed(ctx, content)
+	if err != nil {
+		log.Printf("[SelfImprove] Failed to generate embedding: %v", err)
+		return nil
+	}
+
+	return embedding
 }
 
 // ProcessTaskResult 处理任务结果（完整的自我改进流程）
 func (sil *SelfImprovementLoop) ProcessTaskResult(ctx context.Context, agentID string, result *TaskResult) error {
+	// 获取当前 Agent 列表（线程安全）
+	agentIDs := sil.GetAgentIDs()
+
 	// 1. 提取经验
 	exp, err := sil.extractor.ExtractExperience(ctx, agentID, result)
 	if err != nil {
@@ -668,13 +790,15 @@ func (sil *SelfImprovementLoop) ProcessTaskResult(ctx context.Context, agentID s
 
 		// 共享经验给其他 Agent
 		var otherAgents []string
-		for _, id := range sil.agentIDs {
+		for _, id := range agentIDs {
 			if id != agentID {
 				otherAgents = append(otherAgents, id)
 			}
 		}
 		if len(otherAgents) > 0 {
 			sil.sharer.ShareExperience(ctx, exp, otherAgents)
+		} else {
+			log.Printf("[SelfImprove] No other agents to share experience, agentIDs: %v", agentIDs)
 		}
 	}
 
@@ -698,12 +822,16 @@ func (sil *SelfImprovementLoop) ProcessTaskResult(ctx context.Context, agentID s
 			CreatedAt:  time.Now(),
 			LastAccess: time.Now(),
 		}
+
+		// 为反思内容生成向量嵌入
+		reflectionBlock.Embedding = sil.embedContent(ctx, ref.Analysis)
+
 		sil.store.StoreBlock(ctx, reflectionBlock)
 
 		// 如果学到了新技能，共享给其他 Agent
 		if ref.SkillLearned != nil {
 			var otherAgents []string
-			for _, id := range sil.agentIDs {
+			for _, id := range agentIDs {
 				if id != agentID {
 					otherAgents = append(otherAgents, id)
 				}
@@ -714,8 +842,8 @@ func (sil *SelfImprovementLoop) ProcessTaskResult(ctx context.Context, agentID s
 		}
 	}
 
-	// 3. 定期固化长期记忆
-	if shouldConsolidate(agentID) {
+	// 3. 定期固化长期记忆（基于任务计数）
+	if sil.shouldConsolidate(agentID) {
 		sil.memoryManager.ConsolidateToLongTerm(ctx, agentID)
 	}
 
@@ -723,32 +851,129 @@ func (sil *SelfImprovementLoop) ProcessTaskResult(ctx context.Context, agentID s
 }
 
 // shouldConsolidate 判断是否应该固化记忆
-func shouldConsolidate(agentID string) bool {
-	// 简单实现：每处理10个任务固化一次
-	// 实际可以根据更复杂的策略决定
-	return time.Now().Minute()%10 == 0
+// 策略：每处理 N 个任务固化一次（默认 N=10）
+func (sil *SelfImprovementLoop) shouldConsolidate(agentID string) bool {
+	// 获取或创建该 Agent 的计数器
+	var counter *int32
+	if v, ok := sil.taskCounters.Load(agentID); ok {
+		counter = v.(*int32)
+	} else {
+		var newCounter int32
+		counter = &newCounter
+		sil.taskCounters.Store(agentID, counter)
+	}
+
+	// 原子递增并检查
+	count := atomic.AddInt32(counter, 1)
+	if count >= int32(sil.consolidateN) {
+		// 重置计数器
+		atomic.StoreInt32(counter, 0)
+		log.Printf("[SelfImprove] Consolidating memories for agent %s after %d tasks", agentID, count)
+		return true
+	}
+	return false
 }
 
 // GetRelevantMemories 获取相关记忆（用于任务执行前的上下文构建）
+// 支持基于 taskType 和任务描述的语义检索
 func (sil *SelfImprovementLoop) GetRelevantMemories(ctx context.Context, agentID, taskType string) ([]*MemoryBlock, error) {
-	// 获取短期记忆
-	shortTerm := sil.memoryManager.GetShortTermMemories(agentID)
+	return sil.GetRelevantMemoriesWithQuery(ctx, agentID, taskType, "")
+}
 
-	// 获取长期记忆
+// GetRelevantMemoriesWithQuery 获取相关记忆，支持语义检索
+// agentID: Agent 标识
+// taskType: 任务类型（用于过滤和检索）
+// query: 可选的查询文本，用于语义相似度检索
+func (sil *SelfImprovementLoop) GetRelevantMemoriesWithQuery(ctx context.Context, agentID, taskType, query string) ([]*MemoryBlock, error) {
+	var allMemories []*MemoryBlock
+	seenIDs := make(map[string]bool)
+
+	// 辅助函数：去重添加
+	addMemories := func(memories []*MemoryBlock) {
+		for _, m := range memories {
+			if !seenIDs[m.ID] {
+				seenIDs[m.ID] = true
+				allMemories = append(allMemories, m)
+			}
+		}
+	}
+
+	// 1. 获取短期记忆（高优先级，来自内存）
+	shortTerm := sil.memoryManager.GetShortTermMemories(agentID)
+	addMemories(shortTerm)
+
+	// 2. 语义相似度检索（如果配置了 embedding client 且有查询文本）
+	if sil.embeddingClient != nil && query != "" {
+		if embedding, err := sil.embeddingClient.Embed(ctx, query); err == nil {
+			// 向量相似度检索 Top5
+			similar, err := sil.store.SearchSimilar(ctx, embedding, 5)
+			if err != nil {
+				log.Printf("[SelfImprove] SearchSimilar failed: %v", err)
+			} else {
+				// 按类型过滤：优先返回当前 taskType 相关的记忆
+				var filtered []*MemoryBlock
+				for _, m := range similar {
+					// 包含当前 agent 的记忆或共享记忆
+					if m.AgentID == agentID || m.Type == MemoryTypeShared {
+						// 如果记忆有 task_type 元数据，优先匹配
+						if m.Metadata != nil {
+							if memTaskType, ok := m.Metadata["task_type"].(string); ok && memTaskType == taskType {
+								filtered = append([]*MemoryBlock{m}, filtered...) // 前置匹配项
+								continue
+							}
+						}
+						filtered = append(filtered, m)
+					}
+				}
+				addMemories(filtered)
+			}
+		} else {
+			log.Printf("[SelfImprove] Failed to generate query embedding: %v", err)
+		}
+	}
+
+	// 3. 如果没有查询文本或语义检索失败，按 taskType 查询长期记忆
 	longTerm, err := sil.store.QueryBlocks(ctx, agentID, MemoryTypeLongTerm, 5)
 	if err != nil {
 		log.Printf("[SelfImprove] Failed to query long-term memory: %v", err)
 	}
+	// 过滤：优先返回与 taskType 相关的记忆
+	if taskType != "" {
+		var filtered []*MemoryBlock
+		for _, m := range longTerm {
+			if m.Metadata != nil {
+				if memTaskType, ok := m.Metadata["task_type"].(string); ok && memTaskType == taskType {
+					filtered = append([]*MemoryBlock{m}, filtered...)
+					continue
+				}
+			}
+			filtered = append(filtered, m)
+		}
+		longTerm = filtered
+	}
+	addMemories(longTerm)
 
-	// 获取共享记忆
+	// 4. 获取共享记忆
 	shared, err := sil.store.QueryBlocks(ctx, agentID, MemoryTypeShared, 3)
 	if err != nil {
 		log.Printf("[SelfImprove] Failed to query shared memory: %v", err)
 	}
+	addMemories(shared)
 
-	// 合并记忆
-	memories := append(shortTerm, longTerm...)
-	memories = append(memories, shared...)
+	// 5. 按重要性排序
+	for i := 0; i < len(allMemories)-1; i++ {
+		for j := i + 1; j < len(allMemories); j++ {
+			if allMemories[i].Importance < allMemories[j].Importance {
+				allMemories[i], allMemories[j] = allMemories[j], allMemories[i]
+			}
+		}
+	}
 
-	return memories, nil
+	// 限制返回数量
+	maxMemories := 15
+	if len(allMemories) > maxMemories {
+		allMemories = allMemories[:maxMemories]
+	}
+
+	return allMemories, nil
 }

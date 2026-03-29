@@ -132,41 +132,89 @@ Cleanup()  → docker stop + rm workdir（cleanupOnce 保证幂等）
 
 ### 3.3 Self-Improvement Loop (`pkg/memory/`)
 
-参考 MemGPT/Letta Memory Blocks + Reflexion 框架，任务完成后自动触发三层学习闭环。
+参考 **MemGPT/Letta** 的分层记忆架构和 **Reflexion** 框架，实现 Agent 在任务完成后自动触发三层学习闭环，持续积累和共享知识。
 
-**流程**：
+#### 与 MemGPT 架构的对应关系
+
+| MemGPT 概念 | AI Corp 实现 | 说明 |
+|-------------|-------------|------|
+| Core Memory (persona/human) | `short_term` MemoryBlock | 当前对话上下文，1 小时 TTL，超限按 Importance 淘汰 |
+| Archival Memory | `long_term` MemoryBlock + pgvector | 持久化经验，支持向量语义检索（IVFFlat 索引） |
+| Recall Memory | `agent_experiences` + `agent_reflections` | 历史任务记录，可按 task_type 过滤 |
+| Memory Consolidation | `ConsolidateToLongTerm()` | 每 N 个任务自动将高重要性短期记忆固化为长期记忆 |
+| Memory Sharing (扩展) | `KnowledgeSharer` | MemGPT 原生不支持，AI Corp 扩展为多 Agent 经验/技能广播 |
+
+#### 分层记忆模型
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Memory Layer                           │
+│                                                          │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐ │
+│  │  Short-Term  │   │   Long-Term  │   │    Shared    │ │
+│  │  (内存缓存)   │   │  (PostgreSQL) │   │  (跨Agent)   │ │
+│  │  TTL=1h      │   │  向量+文本    │   │  广播写入     │ │
+│  │  Importance↓  │   │  IVFFlat 索引 │   │              │ │
+│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘ │
+│         │                  │                   │         │
+│         └────────┬─────────┴───────────────────┘         │
+│                  ▼                                        │
+│         GetRelevantMemoriesWithQuery()                    │
+│         短期 + 语义Top5 + 长期 + 共享 → 去重 → Importance排序│
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 三层学习闭环
+
 ```
 task_complete / task_fail
          │
          ▼
-  ExperienceExtractor          → 提取 lessons / patterns / suggestions
-         │                       存入 agent_experiences
+  ExperienceExtractor            → LLM 提取 lessons / patterns / suggestions
+         │                         存入 agent_experiences + short_term
+         │                         生成 Embedding 向量写入 pgvector
          ▼
-  ReflectionEngine             → LLM 分析根本原因、洞察、行动项
-         │                       存入 agent_reflections
+  ReflectionEngine               → LLM 深度分析根本原因、洞察、行动项
+         │                         存入 agent_reflections
+         │                         反思内容同步生成 Embedding 向量
          ▼
-  SkillLearner                 → 识别新技能，存入 agent_skills
-         │
+  SkillLearner                   → 从反思中识别新技能
+         │                         存入 agent_skills (use_count / success_rate)
          ▼
-  KnowledgeSharer              → 将经验/技能广播给其他 Agent
-                                 存为 type=shared 的 agent_memory
+  KnowledgeSharer                → 将经验/技能广播给其他 Agent
+                                   存为 type=shared 的 agent_memory
+                                   共享记忆同样携带 Embedding 向量
 ```
+
+#### 关键实现细节
+
+**Agent ID 动态管理**：`SelfImprovementLoop` 使用 `sync.RWMutex` 保护 `agentIDs` 列表，Orchestrator 在 Agent 创建/删除/注册时实时同步，确保知识共享覆盖所有在线 Agent。
+
+**固化策略**：基于 `sync/atomic` 原子计数器实现每 Agent 独立的任务计数，默认每 10 个任务触发一次 `ConsolidateToLongTerm()`。高重要性（>0.7）或高访问次数（>3）的短期记忆自动升级为长期记忆。
+
+**语义检索增强**：`GetRelevantMemoriesWithQuery()` 支持双路检索——当配置了 `EmbeddingClient` 时，先对查询文本生成向量，通过 pgvector `<=>` 余弦距离算子检索 Top5 相似记忆，再合并传统的按 agent/type 过滤结果，最终按 Importance 降序排列，上限 15 条。
 
 **记忆类型**：
 
 | 类型 | 生命周期 | 用途 |
 |------|----------|------|
-| `short_term` | 1 小时，超过限制淘汰低重要性 | 当前上下文 |
-| `long_term` | 永久，由 ConsolidateToLongTerm 触发 | 重要经验固化 |
-| `reflection` | 永久 | 自我分析记录 |
-| `skill` | 永久，use_count + success_rate 动态更新 | 可复用技能 |
-| `shared` | 永久 | 跨 Agent 传递 |
+| `short_term` | 1 小时 TTL，超限按 Importance 淘汰 | 当前工作上下文 |
+| `long_term` | 永久，由 `ConsolidateToLongTerm` 触发 | 重要经验固化 |
+| `reflection` | 永久 | LLM 自我分析记录 |
+| `skill` | 永久，`use_count` + `success_rate` 动态更新 | 可复用技能模板 |
+| `shared` | 永久 | 跨 Agent 知识传递 |
 
 **chat 记忆注入**：
 ```
-GetRelevantMemories(agentID, taskType)
-  → short_term (内存) + long_term (DB) + shared (DB)
+POST /api/v1/chat { agent_type, message }
+  → GetRelevantMemoriesWithQuery(agentID, taskType, message)
+     1. short_term (内存缓存，高优先级)
+     2. 语义相似度 Top5 (pgvector <=> 余弦距离)
+     3. long_term (DB 按 agent + type 查询)
+     4. shared (DB 跨 Agent 共享记忆)
+  → 去重 + Importance 降序排列 (上限 15 条)
   → 拼接到 system prompt header
+  → InferenceService.ChatWithSystem
   → 下一轮推理自动利用历史经验
 ```
 
@@ -192,6 +240,23 @@ FROM knowledge_base
 WHERE embedding IS NOT NULL
 ORDER BY embedding <=> $1::vector
 LIMIT $2
+```
+
+**IVFFlat 索引自管理**（`pkg/database/vector_index.go`）：
+
+应用启动时自动调用 `EnsureVectorIndexes()`，对 `knowledge_base` 和 `agent_memory` 两张向量表执行：
+
+1. 检测表是否存在及有向量数据的行数
+2. 计算最优 `lists` 参数：`sqrt(行数)`，范围 `[1, 1000]`
+3. 首次创建 IVFFlat 索引（`vector_cosine_ops`）
+4. 数据量增长超过 4 倍时自动 `DROP + CREATE` 重建索引
+5. 支持运行时调整 `ivfflat.probes` 参数（精确度/性能权衡）
+
+```sql
+-- 自动创建的索引示例
+CREATE INDEX idx_kb_embedding_ivfflat
+  ON knowledge_base USING ivfflat (embedding vector_cosine_ops)
+  WITH (lists = 100);
 ```
 
 ---
@@ -222,21 +287,36 @@ Grafana → /metrics → 18 个 Panel 展示
 
 ### 3.6 LLM 双模式 (`pkg/llm/`)
 
-```go
-// 统一接口，运行时切换
-type Client struct { config Config }  // deepseek / openai / claude
+支持云端 API 和本地 Ollama 两种推理模式，运行时统一接口、自动 Fallback。
 
-// 云端 API 模式
-NewClient(Config{Provider: "deepseek", APIKey: "...", Model: "deepseek-chat"})
-
-// 本地 Ollama 模式
-NewClient(Config{Provider: "openai", BaseURL: "http://localhost:11434/v1", Model: "deepseek-coder:6.7b"})
+**架构**：
 ```
+DualModeClient
+  ├── OllamaClient (本地)   → POST /api/chat (非流式)
+  │     120s 超时，ollamaChatRequest/Response 完整解析
+  │     支持 IsAvailable() 健康检查
+  │
+  └── CloudClients (云端)   → DeepSeek / OpenAI / Claude
+        优先级: deepseek > openai > claude
+        失败自动切换下一个 provider
+```
+
+**模式选择策略**：
+```go
+ModelTypeLocal  → 仅使用 Ollama 本地模型
+ModelTypeCloud  → 仅使用云端 API（按优先级 Fallback）
+ModelTypeAuto   → 优先本地 → 失败回退云端
+```
+
+**Ollama 集成**：
+- 直接调用 Ollama 原生 `/api/chat` 接口（非 OpenAI 兼容层）
+- 支持任意 Ollama 模型（DeepSeek 蒸馏、Qwen、Llama 等）
+- 请求/响应完整类型定义，含 `prompt_eval_count`、`eval_count` 等统计字段
 
 `InferenceService` 在 `Client` 上增加：
 - 调用前后计时，计算 TPS = completion_tokens / latency_s
 - 写入 `inference_metrics` 表
-- 更新 Prometheus 指标
+- 更新 Prometheus 指标（延迟直方图、Token 计数器）
 
 ---
 
@@ -260,6 +340,18 @@ MaxConnLifetime = 30min, MaxConnIdleTime = 5min
 | `MetricsRepo` | `inference_metrics` | `Record`, `GetStats` |
 | `ModelRegistryRepo` | `model_registry` | `ListActive`, `UpdateHealth` |
 | `AuditRepo` | `audit_log` | `Log`, `Recent` |
+
+**向量索引自管理**（`vector_index.go`）：
+
+| 功能 | 实现 |
+|------|------|
+| 自动创建 | 启动时检测向量数据行数，`lists = sqrt(行数)` |
+| 自动重建 | 数据量增长超 4 倍时 `DROP + CREATE` |
+| 参数调优 | 运行时 `SET ivfflat.probes = N`（精确度/性能权衡） |
+| 覆盖表 | `knowledge_base`、`agent_memory` |
+
+**一键部署脚本**（`deploy/postgresql/setup-pgvector.sh`）：
+PostgreSQL 16 + pgvector 0.8.0 源码编译、initdb、启用扩展、导入 Schema，一条命令完成。
 
 ---
 

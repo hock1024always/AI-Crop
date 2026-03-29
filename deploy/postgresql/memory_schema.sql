@@ -26,8 +26,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_type ON agent_memory(type);
 CREATE INDEX IF NOT EXISTS idx_memory_importance ON agent_memory(importance DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_expires ON agent_memory(expires_at) WHERE expires_at IS NOT NULL;
 
--- IVFFlat index for vector similarity search (create after data insertion)
--- CREATE INDEX IF NOT EXISTS idx_memory_embedding ON agent_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- IVFFlat index for vector similarity search
+-- 使用 vector_cosine_ops 匹配业务侧的 <=> 余弦距离查询
+CREATE INDEX IF NOT EXISTS idx_memory_embedding_ivfflat ON agent_memory
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- ============================================================
 -- 2. Agent Experiences Table - 经验记录

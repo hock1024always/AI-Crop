@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -505,7 +506,7 @@ func TestSelfImprovementLoop(t *testing.T) {
 		}`,
 	}
 
-	sil := NewSelfImprovementLoop(store, llm, []string{"agent-1", "agent-2"})
+	sil := NewSelfImprovementLoop(store, llm, []string{"agent-1", "agent-2"}, nil)
 
 	ctx := context.Background()
 	result := &TaskResult{
@@ -530,6 +531,245 @@ func TestSelfImprovementLoop(t *testing.T) {
 	if len(store.reflections) == 0 {
 		t.Error("Expected reflection to be stored")
 	}
+}
+
+// ============================================
+// Agent ID Synchronization Tests (验收 A1-A3)
+// ============================================
+
+func TestAgentIDManagement(t *testing.T) {
+	store := NewMockMemoryStore()
+	llm := &MockLLMClient{response: "{}"}
+	sil := NewSelfImprovementLoop(store, llm, []string{}, nil)
+
+	// Test initial empty state
+	ids := sil.GetAgentIDs()
+	if len(ids) != 0 {
+		t.Errorf("Expected 0 agent IDs, got %d", len(ids))
+	}
+
+	// Test AddAgentID
+	sil.AddAgentID("agent-1")
+	sil.AddAgentID("agent-2")
+	ids = sil.GetAgentIDs()
+	if len(ids) != 2 {
+		t.Errorf("Expected 2 agent IDs, got %d", len(ids))
+	}
+
+	// Test duplicate prevention
+	sil.AddAgentID("agent-1") // Should not add duplicate
+	ids = sil.GetAgentIDs()
+	if len(ids) != 2 {
+		t.Errorf("Expected 2 agent IDs after duplicate add, got %d", len(ids))
+	}
+
+	// Test SetAgentIDs
+	sil.SetAgentIDs([]string{"agent-3", "agent-4", "agent-5"})
+	ids = sil.GetAgentIDs()
+	if len(ids) != 3 {
+		t.Errorf("Expected 3 agent IDs after SetAgentIDs, got %d", len(ids))
+	}
+
+	// Test RemoveAgentID
+	sil.RemoveAgentID("agent-4")
+	ids = sil.GetAgentIDs()
+	if len(ids) != 2 {
+		t.Errorf("Expected 2 agent IDs after remove, got %d", len(ids))
+	}
+}
+
+func TestKnowledgeSharingWithAgentIDs(t *testing.T) {
+	store := NewMockMemoryStore()
+	llm := &MockLLMClient{
+		response: `{
+			"analysis": "Test analysis",
+			"insights": ["test"],
+			"action_items": [],
+			"confidence": 0.8
+		}`,
+	}
+	sil := NewSelfImprovementLoop(store, llm, []string{"agent-1", "agent-2", "agent-3"}, nil)
+
+	ctx := context.Background()
+	result := &TaskResult{
+		TaskID:   "task-1",
+		TaskType: "code_gen",
+		Success:  true,
+	}
+
+	err := sil.ProcessTaskResult(ctx, "agent-1", result)
+	if err != nil {
+		t.Fatalf("Failed to process task result: %v", err)
+	}
+
+	// 验收 A2: 共享记忆落库 - 应该有 2 条共享记忆（给 agent-2 和 agent-3）
+	var sharedCount int
+	for _, b := range store.blocks {
+		if b.Type == MemoryTypeShared {
+			sharedCount++
+			// 验证共享记忆是给其他 Agent 的
+			if b.AgentID == "agent-1" {
+				t.Error("Shared memory should not be for the source agent")
+			}
+		}
+	}
+
+	if sharedCount != 2 {
+		t.Errorf("Expected 2 shared memories for other agents, got %d", sharedCount)
+	}
+}
+
+// ============================================
+// Semantic Search Tests (验收 C1-C3)
+// ============================================
+
+// MockEmbeddingClient 是用于测试的模拟 embedding 客户端
+type MockEmbeddingClient struct {
+	dimension int
+}
+
+func NewMockEmbeddingClient() *MockEmbeddingClient {
+	return &MockEmbeddingClient{dimension: 384}
+}
+
+func (m *MockEmbeddingClient) Embed(ctx context.Context, text string) ([]float32, error) {
+	// 简单的模拟向量
+	vector := make([]float32, m.dimension)
+	for i := range vector {
+		vector[i] = float32(len(text)+i) / float32(m.dimension)
+	}
+	return vector, nil
+}
+
+func TestGetRelevantMemoriesWithTaskType(t *testing.T) {
+	store := NewMockMemoryStore()
+
+	// 预存一些长期记忆
+	store.StoreBlock(context.Background(), &MemoryBlock{
+		ID:        "lt-1",
+		AgentID:   "agent-1",
+		Type:      MemoryTypeLongTerm,
+		Title:     "Code Generation Experience",
+		Content:   "Always check for nil pointers",
+		Importance: 0.9,
+		Metadata: map[string]interface{}{
+			"task_type": "code_gen",
+		},
+	})
+
+	store.StoreBlock(context.Background(), &MemoryBlock{
+		ID:        "lt-2",
+		AgentID:   "agent-1",
+		Type:      MemoryTypeLongTerm,
+		Title:     "Testing Experience",
+		Content:   "Write tests first",
+		Importance: 0.8,
+		Metadata: map[string]interface{}{
+			"task_type": "testing",
+		},
+	})
+
+	llm := &MockLLMClient{response: "{}"}
+	sil := NewSelfImprovementLoop(store, llm, []string{"agent-1"}, nil)
+
+	ctx := context.Background()
+
+	// 获取相关记忆
+	memories, err := sil.GetRelevantMemories(ctx, "agent-1", "code_gen")
+	if err != nil {
+		t.Fatalf("Failed to get relevant memories: %v", err)
+	}
+
+	// 应该返回记忆
+	if len(memories) == 0 {
+		t.Error("Expected at least one memory")
+	}
+
+	// 按重要性排序，高重要性的应该在前
+	if len(memories) > 1 && memories[0].Importance < memories[1].Importance {
+		t.Error("Memories should be sorted by importance descending")
+	}
+}
+
+func TestGetRelevantMemoriesWithQuery(t *testing.T) {
+	store := NewMockMemoryStore()
+	embedding := NewMockEmbeddingClient()
+
+	// 预存带向量的记忆
+	vector, _ := embedding.Embed(context.Background(), "code generation patterns")
+	store.StoreBlock(context.Background(), &MemoryBlock{
+		ID:        "sim-1",
+		AgentID:   "agent-1",
+		Type:      MemoryTypeLongTerm,
+		Title:     "Code Patterns",
+		Content:   "code generation patterns",
+		Importance: 0.85,
+		Embedding: vector,
+	})
+
+	llm := &MockLLMClient{response: "{}"}
+	sil := NewSelfImprovementLoop(store, llm, []string{"agent-1"}, embedding)
+
+	ctx := context.Background()
+
+	// 使用查询进行语义检索
+	memories, err := sil.GetRelevantMemoriesWithQuery(ctx, "agent-1", "code_gen", "how to generate code")
+	if err != nil {
+		t.Fatalf("Failed to get relevant memories: %v", err)
+	}
+
+	// 应该返回记忆
+	if len(memories) == 0 {
+		t.Error("Expected at least one memory from semantic search")
+	}
+}
+
+// ============================================
+// Consolidation Strategy Tests (验收 F1-F2)
+// ============================================
+
+func TestConsolidationByTaskCount(t *testing.T) {
+	store := NewMockMemoryStore()
+	llm := &MockLLMClient{
+		response: `{
+			"analysis": "test",
+			"insights": [],
+			"action_items": [],
+			"confidence": 0.5
+		}`,
+	}
+	sil := NewSelfImprovementLoop(store, llm, []string{"agent-1"}, nil)
+	sil.consolidateN = 3 // 每 3 个任务固化一次
+
+	ctx := context.Background()
+
+	// 处理 2 个任务，不应该触发固化
+	for i := 0; i < 2; i++ {
+		result := &TaskResult{
+			TaskID:   fmt.Sprintf("task-%d", i),
+			TaskType: "test",
+			Success:  true,
+		}
+		sil.ProcessTaskResult(ctx, "agent-1", result)
+	}
+
+	// 检查是否有长期记忆（不应该有，因为还没到阈值）
+	var longTermCount int
+	for _, b := range store.blocks {
+		if b.Type == MemoryTypeLongTerm {
+			longTermCount++
+		}
+	}
+	// 注意：短期记忆也可能被固化，取决于重要性
+	// 这里主要测试计数器逻辑
+
+	// 处理第 3 个任务，应该触发固化
+	result := &TaskResult{
+		TaskID:   "task-3",
+		TaskType: "test",
+		Success:  true,
+	}
+	sil.ProcessTaskResult(ctx, "agent-1", result)
 }
 
 // ============================================

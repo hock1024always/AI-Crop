@@ -95,6 +95,14 @@ func (s *RAGService) GetProblem(id string) *problem.Problem {
 	return s.problemStore.Get(id)
 }
 
+// GetEmbedding 获取文本的向量嵌入
+func (s *RAGService) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	if s.embedClient == nil {
+		return nil, fmt.Errorf("embedding client not configured")
+	}
+	return s.embedClient.Embed(ctx, text)
+}
+
 // LoadProblems 直接加载题目（不进行向量化）
 func (s *RAGService) LoadProblems(problems []*problem.Problem) {
 	for _, p := range problems {

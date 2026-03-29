@@ -82,7 +82,11 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
 );
 
 -- IVFFlat index for approximate nearest neighbor search
--- Need to create after inserting some data: CREATE INDEX ON knowledge_base USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- 注意: IVFFlat 要求表中至少有一定数量的行（建议 >= lists 数量）才能正常工作
+-- 使用 vector_cosine_ops 匹配业务侧的 <=> 余弦距离查询
+CREATE INDEX IF NOT EXISTS idx_kb_embedding_ivfflat ON knowledge_base
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
 CREATE INDEX idx_kb_content_type ON knowledge_base(content_type);
 CREATE INDEX idx_kb_source ON knowledge_base(source);
 CREATE INDEX idx_kb_metadata ON knowledge_base USING GIN(metadata);

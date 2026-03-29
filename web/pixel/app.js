@@ -46,32 +46,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ---- WebSocket ----
 function connectWebSocket() {
+  const wsUrl = API.replace('http', 'ws') + '/ws';
+  console.log('[WebSocket] Connecting to:', wsUrl);
+  
   try {
-    state.ws = new WebSocket(API.replace('http', 'ws') + '/ws');
+    state.ws = new WebSocket(wsUrl);
 
     state.ws.onopen = () => {
+      console.log('[WebSocket] Connected successfully');
       state.connected = true;
       updateConnectionUI();
       appendChat('sys', '[SYSTEM] Connected to Orchestrator');
     };
 
     state.ws.onmessage = e => {
+      console.log('[WebSocket] Message received:', e.data);
       try {
         const msg = JSON.parse(e.data);
         handleWSMessage(msg);
-      } catch (_) {}
+      } catch (err) {
+        console.error('[WebSocket] Failed to parse message:', err);
+      }
     };
 
-    state.ws.onclose = () => {
+    state.ws.onclose = (event) => {
+      console.log('[WebSocket] Closed. Code:', event.code, 'Reason:', event.reason);
       state.connected = false;
       updateConnectionUI();
       appendChat('sys', '[SYSTEM] Disconnected. Retrying in 5s...');
       setTimeout(connectWebSocket, 5000);
     };
 
-    state.ws.onerror = () => {
+    state.ws.onerror = (error) => {
+      console.error('[WebSocket] Error:', error);
       state.connected = false;
       updateConnectionUI();
+    };
+  } catch (err) {
+    console.error('[WebSocket] Exception:', err);
+    setTimeout(connectWebSocket, 5000);
+  }
+}
     };
   } catch (_) {
     setTimeout(connectWebSocket, 5000);
@@ -176,6 +191,15 @@ function selectDesk(wsId) {
   state.selectedDesk = wsId;
   renderOffice();
   renderAgentDetail();
+
+  // 聚焦聊天框，提示对话对象
+  const agent = getSelectedAgent();
+  if (agent) {
+    const input = document.getElementById('chat-input');
+    input.placeholder = `对 ${agent.name} 说点什么...`;
+    input.focus();
+    appendChat('sys', `[SYSTEM] 已选中员工: ${agent.name} (${agent.type}) — 直接发消息即可对话`);
+  }
 }
 
 function renderAgentDetail() {
@@ -237,31 +261,65 @@ function appendChat(type, text) {
   el.scrollTop = el.scrollHeight;
 }
 
+// 获取当前选中的 agent
+function getSelectedAgent() {
+  if (!state.selectedDesk) return null;
+  const ws = state.workstations.find(w => w.id === state.selectedDesk);
+  if (!ws) return null;
+  return state.agents.find(a => a.id === ws.agentId) || null;
+}
+
 async function sendMessage() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   if (!text) return;
 
-  appendChat('user', '> ' + text);
+  const agent = getSelectedAgent();
+
+  // 显示用户消息
+  const agentLabel = agent ? agent.name : '全局';
+  appendChat('user', `[你 → ${agentLabel}] ${text}`);
   input.value = '';
 
+  // 禁用输入，等待回复
+  input.disabled = true;
+  document.querySelector('.send-btn').disabled = true;
+
   try {
-    // Create a task from natural language
-    const res = await fetch(API + '/api/v1/tasks', {
+    const body = { message: text };
+    if (agent) {
+      body.agent_id   = agent.id;
+      body.agent_type = agent.type;
+    }
+
+    const res = await fetch(API + '/api/v1/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: text.substring(0, 80),
-        description: text,
-        created_by: 'user',
-      }),
+      body: JSON.stringify(body),
     });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      appendChat('error', `[ERROR] ${err.error || res.statusText}`);
+      return;
+    }
+
     const data = await res.json();
-    appendChat('sys', `[SYSTEM] Task created: ${data.task_id || data.id || 'OK'}`);
-    fetchTasks();
-    fetchAgents();
+    const reply = data.response || '(无回复)';
+    const modelLabel = data.model || data.provider || 'AI';
+    appendChat('agent', `[${agentLabel} (${modelLabel})] ${reply}`);
+
+    // 更新底部模型信息
+    if (data.model) {
+      document.getElementById('current-model').textContent = `当前模型: ${data.model}`;
+    }
+
   } catch (err) {
-    appendChat('error', '[ERROR] Failed to create task: ' + err.message);
+    appendChat('error', `[ERROR] 请求失败: ${err.message}`);
+  } finally {
+    input.disabled = false;
+    document.querySelector('.send-btn').disabled = false;
+    input.focus();
   }
 }
 

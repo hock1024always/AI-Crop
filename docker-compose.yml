@@ -1,6 +1,26 @@
 version: '3.8'
 
 services:
+  # PostgreSQL 16 + pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: aicorp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: aicorp123
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgresql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./deploy/postgresql/memory_schema.sql:/docker-entrypoint-initdb.d/02-memory-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aicorp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   # NATS 消息队列
   nats:
     image: nats:2.10-alpine
@@ -24,7 +44,15 @@ services:
     environment:
       - PORT=8080
       - NATS_URL=nats://nats:4222
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=aicorp123
+      - DB_NAME=aicorp
+      - DB_SSLMODE=disable
     depends_on:
+      postgres:
+        condition: service_healthy
       nats:
         condition: service_healthy
     healthcheck:
@@ -62,6 +90,9 @@ services:
     depends_on:
       orchestrator:
         condition: service_healthy
+
+volumes:
+  pgdata:
 
 networks:
   default:

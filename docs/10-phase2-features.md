@@ -1,4 +1,4 @@
-# AI Corp Phase 2 技术文档
+# AI Corp 核心功能技术说明
 
 ## Docker 任务沙箱隔离系统
 
@@ -321,27 +321,47 @@ CREATE TABLE agent_skills (
 
 ---
 
-## 简历亮点总结
+## 技术亮点总结
 
 ### 亮点一：Docker 任务沙箱隔离
 
-**简历语句**：
 > 实现基于 Docker 的任务沙箱隔离系统，支持内存/CPU/网络/进程多维度资源限制，通过 `--cap-drop=ALL`、`--no-new-privileges` 等安全加固确保 AI 任务执行的安全性。
 
 **技术细节**：
-- 参考 E2B（Firecracker 微虚拟机）和 Daytona（Docker 容器）架构
+- 参考 E2B（Firecracker 微虚拟机）和 Daytona（Docker 容器）架构设计
 - 支持代码执行、网页抓取、数据处理三种预定义沙箱模板
-- 实现硬超时、网络白名单、只读挂载等安全措施
+- 实现硬超时、网络白名单、只读挂载等多层安全措施
+- `cleanupOnce` 保证资源清理幂等，防止容器泄露
 
 ### 亮点二：AI 自我迭代与经验共享
 
-**简历语句**：
 > 设计并实现 AI Agent 自我迭代机制，通过经验提取、反思分析、技能学习三层闭环，实现 Agent 自动从任务结果中学习并共享知识给其他 Agent。
 
 **技术细节**：
-- 参考 MemGPT/Letta 的 Memory Blocks 和 Reflexion 框架
-- 五种记忆类型：短期、长期、反思、技能、共享
-- 完整的自我改进循环：经验提取 → 反思分析 → 技能学习 → 知识共享
+- 参考 MemGPT/Letta 的 Memory Blocks 分层模型（Core/Archival/Recall Memory）
+- 五种记忆类型：短期（TTL 1h）、长期（持久化）、反思、技能、共享
+- 完整的自我改进循环：经验提取 -> 反思分析 -> 技能学习 -> 知识共享
+- `sync.RWMutex` 保护 Agent ID 列表，`sync/atomic` 实现原子化固化计数
+- 关键记忆块生成 Embedding 向量，支持 pgvector 语义相似度检索
+
+### 亮点三：PostgreSQL + pgvector 向量检索
+
+> 基于 PostgreSQL 16 + pgvector 0.8.0 实现 RAG 知识库，IVFFlat 索引支持大规模向量余弦相似度检索，应用层自动管理索引生命周期。
+
+**技术细节**：
+- 一键部署脚本：PG16 + pgvector 0.8.0 源码编译
+- `lists = sqrt(rows)` 自适应索引参数
+- 数据量增长 4 倍自动重建索引
+- 双路检索：向量语义 Top5 + 传统按 agent/type 过滤
+
+### 亮点四：LLM 双模式推理
+
+> 统一接口支持云端 API（DeepSeek/OpenAI）和本地 Ollama 部署，`Auto` 模式自动 Fallback，支持 DeepSeek 蒸馏等任意本地模型。
+
+**技术细节**：
+- Ollama 原生 `/api/chat` 接口调用（非 OpenAI 兼容层）
+- 云端多 Provider 优先级 Fallback：deepseek > openai > claude
+- `InferenceService` 统一计时、Token 统计、Prometheus 指标上报
 
 ---
 
@@ -364,26 +384,36 @@ deploy/postgresql/
 
 ```
 pkg/sandbox/docker_sandbox_test.go
-- TestDefaultSandboxConfig        ✓
-- TestCodeExecutionSandbox        ✓
-- TestWebScraperSandbox           ✓
-- TestDataProcessingSandbox       ✓
-- TestBuildDockerRunArgs          ✓
+- TestDefaultSandboxConfig        PASS
+- TestCodeExecutionSandbox        PASS
+- TestWebScraperSandbox           PASS
+- TestDataProcessingSandbox       PASS
+- TestBuildDockerRunArgs          PASS
 
 pkg/memory/self_improvement_test.go
-- TestMemoryBlockTypes            ✓
-- TestMemoryBlockExpiration       ✓
-- TestExperienceStructure         ✓
-- TestReflectionStructure         ✓
-- TestSkillDefinition             ✓
-- TestMemoryManagerAddShortTerm   ✓
-- TestMemoryManagerLimit          ✓
-- TestMemoryManagerConsolidation  ✓
-- TestBuildReflectionPrompt       ✓
-- TestParseReflectionResponse     ✓
-- TestBuildExtractionPrompt       ✓
-- TestParseExperienceResponse     ✓
-- TestShareExperience             ✓
-- TestShareSkill                  ✓
-- TestSelfImprovementLoop         ✓
+- TestMemoryBlockTypes            PASS
+- TestMemoryBlockExpiration       PASS
+- TestExperienceStructure         PASS
+- TestReflectionStructure         PASS
+- TestSkillDefinition             PASS
+- TestMemoryManagerAddShortTerm   PASS
+- TestMemoryManagerLimit          PASS
+- TestMemoryManagerConsolidation  PASS
+- TestBuildReflectionPrompt       PASS
+- TestParseReflectionResponse     PASS
+- TestBuildExtractionPrompt       PASS
+- TestParseExperienceResponse     PASS
+- TestShareExperience             PASS
+- TestShareSkill                  PASS
+- TestSelfImprovementLoop         PASS
+- TestAgentIDManagement           PASS
+- TestKnowledgeBroadcast          PASS
+- TestSemanticSearch              PASS
+- TestConsolidateByTaskCount      PASS
+- TestEmbeddingOnShareExperience  PASS
+- TestEmbeddingOnShareSkill       PASS
+- TestProcessTaskResultEmbedding  PASS
+- TestRelevantMemoriesWithQuery   PASS
+- TestEmbeddingClientAdapter      PASS
+- TestSelfImprovementLoopCreation PASS
 ```
